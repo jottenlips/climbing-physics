@@ -1,12 +1,21 @@
 import * as THREE from "three";
 
-// Pull direction affects grip efficiency:
+// Pull direction affects grip/foot efficiency:
+// Hand techniques:
 // "down" = pulling down on a jug/edge (most natural, 100% efficient)
 // "side" = side-pulling (slightly less efficient ~85%)
 // "undercling" = pulling up from below (harder, ~70% on overhangs)
 // "gaston" = pushing outward (least efficient ~65%)
 // "sloper" = friction-dependent, less effective on steep terrain
-export type PullDirection = "down" | "side" | "undercling" | "gaston" | "sloper";
+// Foot techniques:
+// "edge" = edging on a foothold with shoe rand (standard foot technique)
+// "smear" = friction smearing on slab/volume (no defined hold)
+// "toe-hook" = hooking toe over/behind a hold (pulls toward wall on overhangs)
+// "heel-hook" = heel on a hold, pulling with hamstring (great for overhangs)
+// "toe-cam" = jamming toe into a pocket or crack
+// "backstep" = outside edge of shoe on a hold, body turned sideways
+export type PullDirection = "down" | "side" | "undercling" | "gaston" | "sloper"
+  | "edge" | "smear" | "toe-hook" | "heel-hook" | "toe-cam" | "backstep";
 
 export interface ClimberConfig {
   bodyWeightKg: number;
@@ -450,6 +459,36 @@ export function computeForces(config: ClimberConfig): ForceResult {
         const aboveBonus = normDy > 0 ? normDy * 0.1 : normDy * 0.15;
         const distPenalty = lateralDist * -0.1;
         return Math.max(0.3, 0.85 + aboveBonus + distPenalty - overhang * 0.35);
+      }
+      // Foot techniques — these affect grip indirectly by changing how much
+      // load the feet can bear, reducing hand load.
+      case "edge": {
+        // Standard edging: very efficient on small footholds. Slightly worse on slab.
+        return Math.max(0.4, 0.90 - overhang * 0.1);
+      }
+      case "smear": {
+        // Friction smearing: great on slab, terrible on overhangs.
+        const slabBonus = Math.max(0, -normDy) * 0.15;
+        return Math.max(0.3, 0.75 + slabBonus - overhang * 0.4);
+      }
+      case "toe-hook": {
+        // Toe hook: pulls body toward wall on overhangs. Very effective on steep terrain.
+        // Poor on slab (no benefit from hooking).
+        return Math.max(0.3, 0.60 + overhang * 0.35);
+      }
+      case "heel-hook": {
+        // Heel hook: uses hamstring to pull. Excellent on overhangs and roofs.
+        // Can bear significant load, reducing hand force dramatically.
+        return Math.max(0.3, 0.65 + overhang * 0.35);
+      }
+      case "toe-cam": {
+        // Toe jam in pockets/cracks: very secure, angle-independent.
+        return Math.max(0.4, 0.85);
+      }
+      case "backstep": {
+        // Outside edge, body turned: great with twist, mediocre without.
+        const twistBonus = Math.abs(normDx) * 0.2;
+        return Math.max(0.3, 0.75 + twistBonus);
       }
     }
   };

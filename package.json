@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build": "vite build",
     "ampt:dev": "vite",
     "ampt:tsc": "tsc",
     "ampt:build": "vite build",

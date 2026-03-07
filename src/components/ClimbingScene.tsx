@@ -1,8 +1,9 @@
-import { useMemo } from "react";
-import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Line } from "@react-three/drei";
+import { useMemo, useCallback, useRef } from "react";
+import { Canvas, ThreeEvent, useFrame } from "@react-three/fiber";
+import { OrbitControls, Line, Sky, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { ClimberConfig, ForceResult, computeForces } from "../physics/climbingPhysics";
+import { PlacedHold, HoldDirection, HOLD_INFO } from "../holds/holdTypes";
 
 const FORCE_SCALE = 0.003;
 const HOLD_OFFSET = 0.02;
@@ -126,27 +127,225 @@ function Limb({ from, to, color = "#cc9977", width = 2 }: { from: V3; to: V3; co
   return <Line points={[from, to]} color={color} lineWidth={width} />;
 }
 
-function Hold({ position, color, size = 0.04, wallAngleRad }: { position: V3; color: string; size?: number; wallAngleRad: number }) {
+// Direction rotation: rotate hold on the wall plane based on direction
+function directionRotationZ(dir: HoldDirection): number {
+  switch (dir) {
+    case "up": return 0;
+    case "down": return Math.PI;
+    case "left": return Math.PI / 2;
+    case "right": return -Math.PI / 2;
+  }
+}
+
+// Usage indicator: small colored dot showing hand/foot/both
+function UsageDot({ usage, wallAngleRad, offset }: {
+  usage: string;
+  wallAngleRad: number;
+  offset: V3;
+}) {
+  const c = usage === "foot" ? "#4488ff" : usage === "hand" ? "#ff6644" : "#aaccaa";
   return (
-    <mesh position={position} rotation={[wallAngleRad, 0, 0]}>
-      <boxGeometry args={[size * 2.5, size, size * 0.8]} />
-      <meshStandardMaterial color={color} roughness={0.85} />
+    <mesh position={offset} rotation={[wallAngleRad, 0, 0]}>
+      <sphereGeometry args={[0.012, 6, 6]} />
+      <meshBasicMaterial color={c} />
     </mesh>
   );
 }
 
-function Wall({ angleDeg }: { angleDeg: number }) {
+// Direction arrow: small triangle indicating which way the hold faces
+function DirectionArrow({ dir, wallAngleRad, offset }: {
+  dir: HoldDirection;
+  wallAngleRad: number;
+  offset: V3;
+}) {
+  if (dir === "up") return null; // default, no arrow needed
+  const dz = directionRotationZ(dir);
+  return (
+    <mesh position={offset} rotation={[wallAngleRad, 0, dz]}>
+      <coneGeometry args={[0.012, 0.025, 3]} />
+      <meshBasicMaterial color="#ffffff" transparent opacity={0.6} />
+    </mesh>
+  );
+}
+
+function PlacedHold3D({ hold, wallAngleRad, toWorld, onClick, eraserMode }: {
+  hold: PlacedHold;
+  wallAngleRad: number;
+  toWorld: (x: number, h: number, d: number) => V3;
+  onClick?: (id: string) => void;
+  eraserMode?: boolean;
+}) {
+  const pos = toWorld(hold.x, hold.y, 0.02);
+  const info = HOLD_INFO[hold.type];
+  const color = info.color;
+  const dz = directionRotationZ(hold.direction);
+  // Indicator positions offset slightly above the hold
+  const indicatorPos = toWorld(hold.x, hold.y + 0.06, 0.03);
+  const arrowPos = toWorld(hold.x, hold.y - 0.06, 0.03);
+
+  const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
+    if (!onClick || !eraserMode) return;
+    e.stopPropagation();
+    onClick(hold.id);
+  }, [onClick, eraserMode, hold.id]);
+
+  const holdColor = eraserMode ? "#ff4444" : color;
+
+  const indicators = (
+    <>
+      <UsageDot usage={hold.usage} wallAngleRad={wallAngleRad} offset={indicatorPos} />
+      <DirectionArrow dir={hold.direction} wallAngleRad={wallAngleRad} offset={arrowPos} />
+    </>
+  );
+
+  switch (hold.type) {
+    case "jug":
+      return (
+        <group onClick={handleClick}>
+          <mesh position={pos} rotation={[wallAngleRad, 0, dz]}>
+            <boxGeometry args={[0.14, 0.05, 0.06]} />
+            <meshStandardMaterial color={holdColor} roughness={0.75} />
+          </mesh>
+          {indicators}
+        </group>
+      );
+    case "crimp":
+      return (
+        <group onClick={handleClick}>
+          <mesh position={pos} rotation={[wallAngleRad, 0, dz]}>
+            <boxGeometry args={[0.10, 0.02, 0.035]} />
+            <meshStandardMaterial color={holdColor} roughness={0.7} />
+          </mesh>
+          {indicators}
+        </group>
+      );
+    case "sloper":
+      return (
+        <group onClick={handleClick}>
+          <mesh position={pos} rotation={[wallAngleRad, 0, dz]}>
+            <sphereGeometry args={[0.06, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
+            <meshStandardMaterial color={holdColor} roughness={0.9} />
+          </mesh>
+          {indicators}
+        </group>
+      );
+    case "pinch":
+      return (
+        <group onClick={handleClick}>
+          <group position={pos} rotation={[wallAngleRad, 0, dz]}>
+            <mesh position={[-0.035, 0, 0]}>
+              <boxGeometry args={[0.02, 0.07, 0.04]} />
+              <meshStandardMaterial color={holdColor} roughness={0.75} />
+            </mesh>
+            <mesh position={[0.035, 0, 0]}>
+              <boxGeometry args={[0.02, 0.07, 0.04]} />
+              <meshStandardMaterial color={holdColor} roughness={0.75} />
+            </mesh>
+            <mesh>
+              <boxGeometry args={[0.09, 0.03, 0.04]} />
+              <meshStandardMaterial color={holdColor} roughness={0.75} />
+            </mesh>
+          </group>
+          {indicators}
+        </group>
+      );
+    case "pocket":
+      return (
+        <group onClick={handleClick}>
+          <group position={pos} rotation={[wallAngleRad, 0, dz]}>
+            <mesh>
+              <cylinderGeometry args={[0.035, 0.035, 0.04, 12]} />
+              <meshStandardMaterial color={holdColor} roughness={0.6} />
+            </mesh>
+            <mesh position={[0, 0, 0.005]}>
+              <cylinderGeometry args={[0.025, 0.025, 0.04, 12]} />
+              <meshStandardMaterial color="#1a1a2e" roughness={1} />
+            </mesh>
+          </group>
+          {indicators}
+        </group>
+      );
+    case "volume":
+      return (
+        <group onClick={handleClick}>
+          <mesh position={pos} rotation={[wallAngleRad, Math.PI / 6, dz]}>
+            <coneGeometry args={[0.1, 0.12, 3]} />
+            <meshStandardMaterial color={holdColor} roughness={0.85} />
+          </mesh>
+          {indicators}
+        </group>
+      );
+    case "foot-chip":
+      return (
+        <group onClick={handleClick}>
+          <mesh position={pos} rotation={[wallAngleRad, 0, dz]}>
+            <boxGeometry args={[0.04, 0.015, 0.02]} />
+            <meshStandardMaterial color={holdColor} roughness={0.8} />
+          </mesh>
+          {indicators}
+        </group>
+      );
+    case "foot-edge":
+      return (
+        <group onClick={handleClick}>
+          <mesh position={pos} rotation={[wallAngleRad, 0, dz]}>
+            <boxGeometry args={[0.10, 0.012, 0.025]} />
+            <meshStandardMaterial color={holdColor} roughness={0.75} />
+          </mesh>
+          {indicators}
+        </group>
+      );
+    case "smear-pad":
+      return (
+        <group onClick={handleClick}>
+          <mesh position={pos} rotation={[wallAngleRad, 0, dz]}>
+            <cylinderGeometry args={[0.07, 0.07, 0.008, 16]} />
+            <meshStandardMaterial color={holdColor} roughness={0.95} />
+          </mesh>
+          {indicators}
+        </group>
+      );
+  }
+}
+
+function Wall({ angleDeg, onWallClick, placingMode }: {
+  angleDeg: number;
+  onWallClick?: (x: number, y: number) => void;
+  placingMode?: boolean;
+}) {
   const angleRad = (angleDeg * Math.PI) / 180;
   const wallWidth = 3;
   const wallHeight = 4;
+
+  const wallUp: V3 = [0, Math.cos(angleRad), Math.sin(angleRad)];
+
+  const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
+    if (!onWallClick || !placingMode) return;
+    e.stopPropagation();
+    const pt = e.point;
+    // Convert world point to wall-local coords
+    const x = pt.x;
+    const h = pt.y * wallUp[1] + pt.z * wallUp[2];
+    // Clamp to wall bounds
+    const cx = Math.max(-wallWidth / 2 + 0.1, Math.min(wallWidth / 2 - 0.1, x));
+    const ch = Math.max(0.1, Math.min(wallHeight - 0.1, h));
+    onWallClick(cx, ch);
+  }, [onWallClick, placingMode, wallUp]);
+
   return (
     <group>
       <mesh
         rotation={[angleRad, 0, 0]}
         position={[0, wallHeight / 2 * Math.cos(angleRad), wallHeight / 2 * Math.sin(angleRad)]}
+        onClick={handleClick}
       >
         <planeGeometry args={[wallWidth, wallHeight]} />
-        <meshStandardMaterial color="#8B7355" side={THREE.DoubleSide} transparent opacity={0.45} />
+        <meshStandardMaterial
+          color={placingMode ? "#9B8365" : "#8B7355"}
+          side={THREE.DoubleSide}
+          transparent
+          opacity={placingMode ? 0.55 : 0.45}
+        />
       </mesh>
       <mesh
         rotation={[angleRad, 0, 0]}
@@ -269,23 +468,30 @@ function Climber({ config, forces }: { config: ClimberConfig; forces: ForceResul
   const lfClamped = clampToReach(hipL, lf, legReach);
   const rfClamped = clampToReach(hipR, rf, legReach);
 
-  // Compute bend direction for a joint: perpendicular to the limb axis,
-  // guaranteed to point away from the wall (positive wallNorm side).
-  // Uses cross product with lateral axis, then flips if pointing into wall.
-  const bendAwayFromWall = (origin: V3, target: V3, lateralSign: number): V3 => {
-    const forward = v3normalize(v3sub(target, origin));
+  // Compute elbow bend direction: anatomically, elbows are hinge joints
+  // that primarily point DOWN and slightly OUT (away from body midline).
+  // On steep terrain, elbows also push away from the wall.
+  const computeElbowBend = (shoulder: V3, wrist: V3, lateralSign: number): V3 => {
+    // Desired direction: blend of down + lateral splay + away from wall
+    const down: V3 = [0, -1, 0];
     const lateral: V3 = [lateralSign, 0, 0];
-    let bend = v3cross(forward, lateral);
-    if (v3len(bend) < 0.001) {
-      // forward is parallel to lateral, fallback
-      bend = v3cross(forward, [0, 1, 0]);
+
+    // Weight gravity most, then lateral splay, then wall-normal
+    let desired: V3 = v3normalize(v3add(
+      v3add(v3scale(down, 1.0), v3scale(lateral, 0.5)),
+      v3scale(wallNorm, 0.3)
+    ));
+
+    // The IK solver removes the component along the limb axis,
+    // but if desired is nearly parallel to the limb, provide a fallback
+    const forward = v3normalize(v3sub(wrist, shoulder));
+    const alongLimb = Math.abs(v3dot(desired, forward));
+    if (alongLimb > 0.95) {
+      // Desired is nearly parallel to arm — use wall normal + lateral as fallback
+      desired = v3normalize(v3add(v3scale(wallNorm, 0.7), v3scale(lateral, 0.3)));
     }
-    bend = v3normalize(bend);
-    // Ensure it points away from wall (positive dot with wallNorm)
-    if (v3dot(bend, wallNorm) < 0) {
-      bend = v3scale(bend, -1);
-    }
-    return bend;
+
+    return desired;
   };
 
   // Derive wrist/ankle from clamped targets.
@@ -319,10 +525,9 @@ function Climber({ config, forces }: { config: ClimberConfig; forces: ForceResul
   const ankleL = ankleFromClamped(hipL, lfClamped);
   const ankleR = ankleFromClamped(hipR, rfClamped);
 
-  // Solve IK with dynamically computed bend directions
-  // Elbows: bend away from wall, lateral splay outward
-  const elbowBendL = bendAwayFromWall(shoulderL, wristL, -1);
-  const elbowBendR = bendAwayFromWall(shoulderR, wristR, 1);
+  // Solve IK with anatomical elbow bend directions
+  const elbowBendL = computeElbowBend(shoulderL, wristL, -1);
+  const elbowBendR = computeElbowBend(shoulderR, wristR, 1);
   const elbowL = solveIK2Bone(shoulderL, wristL, upperArm, forearm, elbowBendL);
   const elbowR = solveIK2Bone(shoulderR, wristR, upperArm, forearm, elbowBendR);
 
@@ -433,17 +638,35 @@ function Climber({ config, forces }: { config: ClimberConfig; forces: ForceResul
 
   return (
     <group>
-      {/* Holds — only show if limb is on wall */}
-      {config.leftHandOn && <Hold position={lh} color="#dd5533" size={0.04} wallAngleRad={angleRad} />}
-      {config.rightHandOn && <Hold position={rh} color="#dd5533" size={0.04} wallAngleRad={angleRad} />}
-      {config.leftFootOn && <Hold position={lf} color="#557799" size={0.035} wallAngleRad={angleRad} />}
-      {config.rightFootOn && <Hold position={rf} color="#557799" size={0.035} wallAngleRad={angleRad} />}
-
       {/* Head */}
       <mesh position={head}>
         <sphereGeometry args={[headRadius, 16, 16]} />
         <meshStandardMaterial color={skinColor} roughness={0.7} />
       </mesh>
+      {/* Beanie */}
+      {(() => {
+        const beanieR = headRadius * 1.05;
+        const beanieH = headRadius * 0.7;
+        const headDir = v3normalize(v3sub(head, chest));
+        const beaniePos = v3add(head, v3scale(headDir, headRadius * 0.35));
+        const up = new THREE.Vector3(0, 1, 0);
+        const dir = new THREE.Vector3(...headDir);
+        const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
+        return (
+          <group position={beaniePos} quaternion={quat}>
+            {/* Main beanie dome */}
+            <mesh position={[0, 0, 0]}>
+              <sphereGeometry args={[beanieR, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+              <meshStandardMaterial color="#1a1a1a" roughness={0.95} />
+            </mesh>
+            {/* Folded brim */}
+            <mesh position={[0, -beanieH * 0.15, 0]}>
+              <cylinderGeometry args={[beanieR * 1.02, beanieR * 1.04, beanieH * 0.25, 14]} />
+              <meshStandardMaterial color="#222222" roughness={0.9} />
+            </mesh>
+          </group>
+        );
+      })()}
 
       {/* Neck & Torso — width scales with body weight */}
       <Limb from={head} to={chest} color={skinColor} width={3} />
@@ -685,17 +908,726 @@ function Climber({ config, forces }: { config: ClimberConfig; forces: ForceResul
 }
 
 
-export default function ClimbingScene({ config }: { config: ClimberConfig }) {
+// === RAGDOLL ===
+export interface RagdollPart {
+  shape: "sphere" | "cylinder" | "box";
+  color: string;
+  size: [number, number, number]; // radius/width, height, depth
+  position: [number, number, number];
+  velocity: [number, number, number];
+  rotation: [number, number, number];
+  angularVel: [number, number, number];
+}
+
+function RagdollClimber({ parts: initialParts }: { parts: RagdollPart[] }) {
+  const partsRef = useRef<RagdollPart[]>(initialParts.map(p => ({ ...p })));
+  const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const initialized = useRef(false);
+
+  if (!initialized.current) {
+    partsRef.current = initialParts.map(p => ({
+      ...p,
+      position: [...p.position] as [number, number, number],
+      velocity: [...p.velocity] as [number, number, number],
+      rotation: [...p.rotation] as [number, number, number],
+      angularVel: [...p.angularVel] as [number, number, number],
+    }));
+    initialized.current = true;
+  }
+
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 0.05);
+    const GRAVITY = -9.8;
+    const BOUNCE = 0.3;
+    const FRICTION = 0.92;
+    const FLOOR_Y = 0.02;
+
+    partsRef.current.forEach((part, i) => {
+      // Gravity
+      part.velocity[1] += GRAVITY * dt;
+
+      // Update position
+      part.position[0] += part.velocity[0] * dt;
+      part.position[1] += part.velocity[1] * dt;
+      part.position[2] += part.velocity[2] * dt;
+
+      // Update rotation
+      part.rotation[0] += part.angularVel[0] * dt;
+      part.rotation[1] += part.angularVel[1] * dt;
+      part.rotation[2] += part.angularVel[2] * dt;
+
+      // Floor collision
+      const halfH = part.shape === "sphere" ? part.size[0] : part.size[1] * 0.5;
+      if (part.position[1] < FLOOR_Y + halfH) {
+        part.position[1] = FLOOR_Y + halfH;
+        part.velocity[1] = Math.abs(part.velocity[1]) * BOUNCE;
+        // Friction on ground
+        part.velocity[0] *= FRICTION;
+        part.velocity[2] *= FRICTION;
+        // Angular damping on ground
+        part.angularVel[0] *= 0.95;
+        part.angularVel[1] *= 0.95;
+        part.angularVel[2] *= 0.95;
+
+        // Extra damping when nearly stopped
+        if (Math.abs(part.velocity[1]) < 0.3) {
+          part.velocity[1] = 0;
+          part.velocity[0] *= 0.9;
+          part.velocity[2] *= 0.9;
+          part.angularVel[0] *= 0.9;
+          part.angularVel[1] *= 0.9;
+          part.angularVel[2] *= 0.9;
+        }
+      }
+
+      // Update mesh
+      const mesh = meshRefs.current[i];
+      if (mesh) {
+        mesh.position.set(part.position[0], part.position[1], part.position[2]);
+        mesh.rotation.set(part.rotation[0], part.rotation[1], part.rotation[2]);
+      }
+    });
+  });
+
+  return (
+    <group>
+      {initialParts.map((part, i) => (
+        <mesh
+          key={i}
+          ref={(el) => { meshRefs.current[i] = el; }}
+          position={part.position}
+          rotation={part.rotation}
+        >
+          {part.shape === "sphere" && <sphereGeometry args={[part.size[0], 10, 10]} />}
+          {part.shape === "cylinder" && <cylinderGeometry args={[part.size[0], part.size[0], part.size[1], 8]} />}
+          {part.shape === "box" && <boxGeometry args={part.size} />}
+          <meshStandardMaterial color={part.color} roughness={0.7} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function SmokePuffs({ origin, scale: s }: { origin: V3; scale: number }) {
+  const NUM_PUFFS = 8;
+  const meshRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const puffsRef = useRef(
+    Array.from({ length: NUM_PUFFS }, (_, i) => ({
+      age: (i / NUM_PUFFS) * 3, // stagger start times
+      x: 0, y: 0, z: 0,
+      vx: (Math.random() - 0.5) * 0.02,
+      vz: (Math.random() - 0.5) * 0.02,
+      size: 0,
+    }))
+  );
+
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 0.05);
+    puffsRef.current.forEach((p, i) => {
+      p.age += dt;
+      if (p.age > 3) {
+        // Reset puff
+        p.age = 0;
+        p.x = 0; p.y = 0; p.z = 0;
+        p.vx = (Math.random() - 0.5) * 0.03;
+        p.vz = (Math.random() - 0.5) * 0.03;
+      }
+      const t = p.age / 3; // 0..1 lifetime
+      p.x += p.vx * dt;
+      p.y += (0.08 + t * 0.04) * dt * s; // rise and slow
+      p.z += p.vz * dt;
+      p.vx += (Math.random() - 0.5) * 0.01 * dt; // drift
+      p.vz += (Math.random() - 0.5) * 0.01 * dt;
+      p.size = (0.008 + t * 0.025) * s; // grow
+      const opacity = t < 0.1 ? t / 0.1 : Math.max(0, 1 - (t - 0.1) / 0.9); // fade in/out
+
+      const mesh = meshRefs.current[i];
+      if (mesh) {
+        mesh.position.set(origin[0] + p.x, origin[1] + p.y, origin[2] + p.z);
+        mesh.scale.setScalar(p.size);
+        (mesh.material as THREE.MeshStandardMaterial).opacity = opacity * 0.5;
+      }
+    });
+  });
+
+  return (
+    <group>
+      {puffsRef.current.map((_, i) => (
+        <mesh key={i} ref={(el) => { meshRefs.current[i] = el; }}>
+          <sphereGeometry args={[1, 6, 6]} />
+          <meshStandardMaterial color="#cccccc" transparent opacity={0} depthWrite={false} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function SittingClimber({ scale }: { scale: number }) {
+  const s = scale;
+  const skinColor = "#ddbbaa";
+  const torsoColor = "#5588aa";
+  const legColor = "#445566";
+  const shoeColor = "#334455";
+  const headR = 0.065 * s;
+  const torsoH = 0.26 * s;
+  const torsoW = 0.09 * s;
+  const thighL = 0.22 * s;
+  const shinL = 0.18 * s;
+
+  // Sitting on ground: butt at y ~ 0.05, legs out front
+  const pelvisY = 0.08 * s;
+  const chestY = pelvisY + torsoH;
+  const headY = chestY + 0.08 * s + headR;
+
+  // Arm raise animation
+  const armRef = useRef<THREE.Group>(null);
+  const timeRef = useRef(0);
+  useFrame((_, delta) => {
+    timeRef.current += delta;
+    if (armRef.current) {
+      // Slow breathing/puffing motion
+      const t = Math.sin(timeRef.current * 0.8) * 0.5 + 0.5; // 0..1
+      armRef.current.rotation.x = -0.5 - t * 0.15; // raise toward mouth
+      armRef.current.rotation.z = -0.2 + t * 0.05;
+    }
+  });
+
+  return (
+    <group position={[0.8, 0, 1.5]}>
+      {/* Head */}
+      <mesh position={[0, headY, 0.02]}>
+        <sphereGeometry args={[headR, 12, 12]} />
+        <meshStandardMaterial color={skinColor} roughness={0.7} />
+      </mesh>
+      {/* Beanie */}
+      <mesh position={[0, headY + headR * 0.35, 0.02]}>
+        <sphereGeometry args={[headR * 1.05, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+        <meshStandardMaterial color="#1a1a1a" roughness={0.95} />
+      </mesh>
+      <mesh position={[0, headY + headR * 0.2, 0.02]}>
+        <cylinderGeometry args={[headR * 1.07, headR * 1.09, headR * 0.18, 14]} />
+        <meshStandardMaterial color="#222222" roughness={0.9} />
+      </mesh>
+      {/* Torso */}
+      <mesh position={[0, pelvisY + torsoH * 0.5, 0.02]} rotation={[0.2, 0, 0]}>
+        <cylinderGeometry args={[torsoW * 0.85, torsoW, torsoH, 10]} />
+        <meshStandardMaterial color={torsoColor} roughness={0.7} />
+      </mesh>
+      {/* Left thigh */}
+      <mesh position={[-0.05 * s, pelvisY, thighL * 0.4]} rotation={[Math.PI / 2.3, 0, 0.1]}>
+        <cylinderGeometry args={[0.025 * s, 0.022 * s, thighL, 8]} />
+        <meshStandardMaterial color={legColor} roughness={0.7} />
+      </mesh>
+      {/* Right thigh */}
+      <mesh position={[0.05 * s, pelvisY, thighL * 0.4]} rotation={[Math.PI / 2.3, 0, -0.1]}>
+        <cylinderGeometry args={[0.025 * s, 0.022 * s, thighL, 8]} />
+        <meshStandardMaterial color={legColor} roughness={0.7} />
+      </mesh>
+      {/* Left shin */}
+      <mesh position={[-0.06 * s, 0.04 * s, thighL * 0.75]} rotation={[0.3, 0, 0]}>
+        <cylinderGeometry args={[0.02 * s, 0.018 * s, shinL, 8]} />
+        <meshStandardMaterial color={legColor} roughness={0.7} />
+      </mesh>
+      {/* Right shin */}
+      <mesh position={[0.06 * s, 0.04 * s, thighL * 0.75]} rotation={[0.3, 0, 0]}>
+        <cylinderGeometry args={[0.02 * s, 0.018 * s, shinL, 8]} />
+        <meshStandardMaterial color={legColor} roughness={0.7} />
+      </mesh>
+      {/* Left foot */}
+      <mesh position={[-0.06 * s, 0.02 * s, thighL * 0.75 + shinL * 0.4]}>
+        <boxGeometry args={[0.035 * s, 0.02 * s, 0.07 * s]} />
+        <meshStandardMaterial color={shoeColor} roughness={0.8} />
+      </mesh>
+      {/* Right foot */}
+      <mesh position={[0.06 * s, 0.02 * s, thighL * 0.75 + shinL * 0.4]}>
+        <boxGeometry args={[0.035 * s, 0.02 * s, 0.07 * s]} />
+        <meshStandardMaterial color={shoeColor} roughness={0.8} />
+      </mesh>
+      {/* Left arm - resting on knee */}
+      <mesh position={[-0.1 * s, chestY * 0.6, thighL * 0.3]} rotation={[0.8, 0, 0.3]}>
+        <cylinderGeometry args={[0.018 * s, 0.015 * s, 0.3 * s, 8]} />
+        <meshStandardMaterial color={skinColor} roughness={0.7} />
+      </mesh>
+      {/* Left hand on knee */}
+      <mesh position={[-0.08 * s, pelvisY + 0.02, thighL * 0.55]}>
+        <sphereGeometry args={[0.016 * s, 8, 8]} />
+        <meshStandardMaterial color={skinColor} roughness={0.7} />
+      </mesh>
+
+      {/* Right arm - raised, holding joint */}
+      <group ref={armRef} position={[0.1 * s, chestY, 0.02]}>
+        {/* Upper + forearm */}
+        <mesh position={[0, -0.1 * s, 0.08 * s]} rotation={[0, 0, 0]}>
+          <cylinderGeometry args={[0.018 * s, 0.015 * s, 0.28 * s, 8]} />
+          <meshStandardMaterial color={skinColor} roughness={0.7} />
+        </mesh>
+        {/* Hand */}
+        <mesh position={[0, -0.22 * s, 0.12 * s]}>
+          <sphereGeometry args={[0.018 * s, 8, 8]} />
+          <meshStandardMaterial color={skinColor} roughness={0.7} />
+        </mesh>
+        {/* Joint - white paper */}
+        <mesh position={[0.01 * s, -0.24 * s, 0.13 * s]} rotation={[0.3, 0, 0.8]}>
+          <cylinderGeometry args={[0.003 * s, 0.004 * s, 0.05 * s, 6]} />
+          <meshStandardMaterial color="#f5f0e0" roughness={0.9} />
+        </mesh>
+        {/* Cherry / lit end */}
+        <mesh position={[0.025 * s, -0.25 * s, 0.14 * s]}>
+          <sphereGeometry args={[0.005 * s, 6, 6]} />
+          <meshStandardMaterial color="#ff4400" emissive="#ff2200" emissiveIntensity={1.5} />
+        </mesh>
+        {/* Smoke */}
+        <SmokePuffs origin={[0.025 * s, -0.24 * s, 0.14 * s]} scale={s} />
+      </group>
+    </group>
+  );
+}
+
+function ToppingOutClimber({ scale, wallAngleDeg }: { scale: number; wallAngleDeg: number }) {
+  const s = scale;
+  const skinColor = "#ddbbaa";
+  const torsoColor = "#5588aa";
+  const legColor = "#445566";
+  const shoeColor = "#334455";
+  const headR = 0.065 * s;
+  const torsoH = 0.26 * s;
+  const torsoW = 0.09 * s;
+  const thighL = 0.22 * s;
+  const shinL = 0.18 * s;
+
+  // Sitting on top of wall — wall is 4m tall
+  const angleRad = (wallAngleDeg * Math.PI) / 180;
+  const wallTop = 4;
+  const topY = wallTop * Math.cos(angleRad);
+  const topZ = wallTop * Math.sin(angleRad);
+
+  const pelvisY = topY + 0.08 * s;
+  const chestY = pelvisY + torsoH;
+  const headY = chestY + 0.08 * s + headR;
+
+  // Drinking arm animation
+  const armRef = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (armRef.current) {
+      const t = Date.now() * 0.001;
+      // Periodic sipping: raise to mouth, pause, lower
+      const cycle = t % 4; // 4 second cycle
+      let tilt: number;
+      if (cycle < 1) tilt = cycle; // raise
+      else if (cycle < 2.5) tilt = 1; // sip
+      else if (cycle < 3.5) tilt = 1 - (cycle - 2.5); // lower
+      else tilt = 0; // rest
+      armRef.current.rotation.x = -0.3 - tilt * 0.6;
+      armRef.current.rotation.z = -0.15 + tilt * 0.05;
+    }
+  });
+
+  return (
+    <group position={[0, 0, topZ - 0.1]}>
+      {/* Head */}
+      <mesh position={[0, headY, 0]}>
+        <sphereGeometry args={[headR, 12, 12]} />
+        <meshStandardMaterial color={skinColor} roughness={0.7} />
+      </mesh>
+      {/* Beanie */}
+      <mesh position={[0, headY + headR * 0.35, 0]}>
+        <sphereGeometry args={[headR * 1.05, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+        <meshStandardMaterial color="#1a1a1a" roughness={0.95} />
+      </mesh>
+      <mesh position={[0, headY + headR * 0.2, 0]}>
+        <cylinderGeometry args={[headR * 1.07, headR * 1.09, headR * 0.18, 14]} />
+        <meshStandardMaterial color="#222222" roughness={0.9} />
+      </mesh>
+      {/* Torso - leaning back slightly */}
+      <mesh position={[0, pelvisY + torsoH * 0.5, -0.02]} rotation={[-0.15, 0, 0]}>
+        <cylinderGeometry args={[torsoW * 0.85, torsoW, torsoH, 10]} />
+        <meshStandardMaterial color={torsoColor} roughness={0.7} />
+      </mesh>
+      {/* Legs dangling over edge */}
+      <mesh position={[-0.05 * s, pelvisY - thighL * 0.35, 0.05]} rotation={[0.4, 0, 0.08]}>
+        <cylinderGeometry args={[0.025 * s, 0.022 * s, thighL, 8]} />
+        <meshStandardMaterial color={legColor} roughness={0.7} />
+      </mesh>
+      <mesh position={[0.05 * s, pelvisY - thighL * 0.35, 0.05]} rotation={[0.4, 0, -0.08]}>
+        <cylinderGeometry args={[0.025 * s, 0.022 * s, thighL, 8]} />
+        <meshStandardMaterial color={legColor} roughness={0.7} />
+      </mesh>
+      {/* Shins hanging */}
+      <mesh position={[-0.06 * s, pelvisY - thighL - shinL * 0.3, 0.12]} rotation={[0.2, 0, 0.05]}>
+        <cylinderGeometry args={[0.02 * s, 0.018 * s, shinL, 8]} />
+        <meshStandardMaterial color={legColor} roughness={0.7} />
+      </mesh>
+      <mesh position={[0.06 * s, pelvisY - thighL - shinL * 0.3, 0.12]} rotation={[0.2, 0, -0.05]}>
+        <cylinderGeometry args={[0.02 * s, 0.018 * s, shinL, 8]} />
+        <meshStandardMaterial color={legColor} roughness={0.7} />
+      </mesh>
+      {/* Feet */}
+      <mesh position={[-0.06 * s, pelvisY - thighL - shinL * 0.65, 0.15]}>
+        <boxGeometry args={[0.035 * s, 0.02 * s, 0.07 * s]} />
+        <meshStandardMaterial color={shoeColor} roughness={0.8} />
+      </mesh>
+      <mesh position={[0.06 * s, pelvisY - thighL - shinL * 0.65, 0.15]}>
+        <boxGeometry args={[0.035 * s, 0.02 * s, 0.07 * s]} />
+        <meshStandardMaterial color={shoeColor} roughness={0.8} />
+      </mesh>
+      {/* Left arm resting on lap */}
+      <mesh position={[-0.1 * s, (pelvisY + chestY) * 0.5, 0.04]} rotation={[0.5, 0, 0.3]}>
+        <cylinderGeometry args={[0.018 * s, 0.015 * s, 0.28 * s, 8]} />
+        <meshStandardMaterial color={skinColor} roughness={0.7} />
+      </mesh>
+      <mesh position={[-0.08 * s, pelvisY + 0.03, 0.08]}>
+        <sphereGeometry args={[0.016 * s, 8, 8]} />
+        <meshStandardMaterial color={skinColor} roughness={0.7} />
+      </mesh>
+
+      {/* Right arm - holding beer, animated */}
+      <group ref={armRef} position={[0.1 * s, chestY, 0]} rotation={[-0.3, 0, -0.15]}>
+        <mesh position={[0, -0.12 * s, 0.06 * s]}>
+          <cylinderGeometry args={[0.018 * s, 0.015 * s, 0.26 * s, 8]} />
+          <meshStandardMaterial color={skinColor} roughness={0.7} />
+        </mesh>
+        {/* Hand */}
+        <mesh position={[0, -0.23 * s, 0.09 * s]}>
+          <sphereGeometry args={[0.018 * s, 8, 8]} />
+          <meshStandardMaterial color={skinColor} roughness={0.7} />
+        </mesh>
+        {/* Beer can */}
+        <group position={[0, -0.26 * s, 0.1 * s]}>
+          {/* Can body */}
+          <mesh>
+            <cylinderGeometry args={[0.018 * s, 0.018 * s, 0.06 * s, 10]} />
+            <meshStandardMaterial color="#cc8800" metalness={0.6} roughness={0.3} />
+          </mesh>
+          {/* Label stripe */}
+          <mesh position={[0, -0.005 * s, 0]}>
+            <cylinderGeometry args={[0.019 * s, 0.019 * s, 0.025 * s, 10]} />
+            <meshStandardMaterial color="#ffffff" metalness={0.3} roughness={0.4} />
+          </mesh>
+          {/* Top rim */}
+          <mesh position={[0, 0.03 * s, 0]}>
+            <cylinderGeometry args={[0.015 * s, 0.018 * s, 0.005 * s, 10]} />
+            <meshStandardMaterial color="#c0c0c0" metalness={0.8} roughness={0.2} />
+          </mesh>
+        </group>
+      </group>
+    </group>
+  );
+}
+
+function SleepingZs({ origin }: { origin: V3 }) {
+  const NUM_ZS = 3;
+  const meshRefs = useRef<(THREE.Group | null)[]>([]);
+  const ages = useRef(Array.from({ length: NUM_ZS }, (_, i) => i * 1.2)); // stagger
+
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 0.05);
+    const CYCLE = 3.6; // seconds per Z lifecycle
+    ages.current.forEach((_, i) => {
+      ages.current[i] += dt;
+      if (ages.current[i] > CYCLE) ages.current[i] -= CYCLE;
+      const t = ages.current[i] / CYCLE; // 0..1
+      const group = meshRefs.current[i];
+      if (group) {
+        // Rise up and drift right, wobble
+        group.position.set(
+          origin[0] + t * 0.15 + Math.sin(t * 4) * 0.02,
+          origin[1] + t * 0.4,
+          origin[2] + Math.cos(t * 3) * 0.02,
+        );
+        // Scale: small → big → fade. Size grows with each Z
+        const sizeMult = 0.03 + i * 0.015;
+        const scale = sizeMult * (t < 0.1 ? t / 0.1 : 1);
+        group.scale.setScalar(scale);
+        // Opacity: fade in then fade out
+        const opacity = t < 0.1 ? t / 0.1 : t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1;
+        const mesh = group.children[0] as THREE.Mesh;
+        if (mesh?.material) {
+          (mesh.material as THREE.MeshStandardMaterial).opacity = opacity * 0.8;
+        }
+      }
+    });
+  });
+
+  return (
+    <group>
+      {Array.from({ length: NUM_ZS }, (_, i) => (
+        <group key={i} ref={(el) => { meshRefs.current[i] = el; }}>
+          <Text
+            fontSize={1}
+            color="#aaccff"
+            anchorX="center"
+            anchorY="middle"
+            material-transparent={true}
+            material-opacity={0.8}
+            material-depthWrite={false}
+          >
+            z
+          </Text>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function CragDog() {
+  // Sleeping dog curled up on the ground
+  const breathRef = useRef<THREE.Group>(null);
+  useFrame(() => {
+    if (breathRef.current) {
+      // Gentle breathing: slow scale pulse on the body
+      const t = Date.now() * 0.001;
+      const breath = 1 + Math.sin(t * 1.2) * 0.015;
+      breathRef.current.scale.set(1, breath, 1);
+    }
+  });
+
+  const fur = "#8B6914";
+  const darkFur = "#6B4F10";
+  const nose = "#222";
+  const belly = "#BFA054";
+
+  return (
+    <group position={[-2.2, 0, 1.8]} rotation={[0, 0.6, 0]}>
+      {/* Body - oval lying on ground */}
+      <group ref={breathRef}>
+        <mesh position={[0, 0.12, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <capsuleGeometry args={[0.1, 0.28, 8, 12]} />
+          <meshStandardMaterial color={fur} roughness={0.95} />
+        </mesh>
+        {/* Belly (lighter underside) */}
+        <mesh position={[0, 0.07, 0.04]} rotation={[0.3, 0, Math.PI / 2]}>
+          <capsuleGeometry args={[0.06, 0.2, 6, 8]} />
+          <meshStandardMaterial color={belly} roughness={0.95} />
+        </mesh>
+      </group>
+
+      {/* Head - resting on front paws */}
+      <mesh position={[0.22, 0.1, 0]} rotation={[0, 0, 0.1]}>
+        <sphereGeometry args={[0.08, 10, 10]} />
+        <meshStandardMaterial color={fur} roughness={0.9} />
+      </mesh>
+      {/* Snout */}
+      <mesh position={[0.3, 0.08, 0]} rotation={[0, 0, 0.2]}>
+        <capsuleGeometry args={[0.035, 0.04, 6, 8]} />
+        <meshStandardMaterial color={darkFur} roughness={0.9} />
+      </mesh>
+      {/* Nose */}
+      <mesh position={[0.34, 0.09, 0]}>
+        <sphereGeometry args={[0.015, 6, 6]} />
+        <meshStandardMaterial color={nose} roughness={0.5} />
+      </mesh>
+
+      {/* Ears - floppy, drooped */}
+      <mesh position={[0.18, 0.17, 0.06]} rotation={[0.4, 0.3, -0.5]}>
+        <sphereGeometry args={[0.035, 6, 6]} />
+        <meshStandardMaterial color={darkFur} roughness={0.95} />
+      </mesh>
+      <mesh position={[0.18, 0.17, -0.06]} rotation={[-0.4, -0.3, -0.5]}>
+        <sphereGeometry args={[0.035, 6, 6]} />
+        <meshStandardMaterial color={darkFur} roughness={0.95} />
+      </mesh>
+
+      {/* Eyes - closed (small dark lines, just tiny flat spheres) */}
+      <mesh position={[0.27, 0.13, 0.035]}>
+        <sphereGeometry args={[0.01, 4, 4]} />
+        <meshStandardMaterial color="#333" roughness={1} />
+      </mesh>
+      <mesh position={[0.27, 0.13, -0.035]}>
+        <sphereGeometry args={[0.01, 4, 4]} />
+        <meshStandardMaterial color="#333" roughness={1} />
+      </mesh>
+
+      {/* Front paws - extended forward, head resting on them */}
+      <mesh position={[0.24, 0.03, 0.06]} rotation={[0, 0.2, 0]}>
+        <capsuleGeometry args={[0.025, 0.1, 6, 6]} />
+        <meshStandardMaterial color={fur} roughness={0.95} />
+      </mesh>
+      <mesh position={[0.24, 0.03, -0.06]} rotation={[0, -0.2, 0]}>
+        <capsuleGeometry args={[0.025, 0.1, 6, 6]} />
+        <meshStandardMaterial color={fur} roughness={0.95} />
+      </mesh>
+      {/* Paw pads */}
+      <mesh position={[0.3, 0.02, 0.06]}>
+        <sphereGeometry args={[0.02, 6, 6]} />
+        <meshStandardMaterial color={darkFur} roughness={0.9} />
+      </mesh>
+      <mesh position={[0.3, 0.02, -0.06]}>
+        <sphereGeometry args={[0.02, 6, 6]} />
+        <meshStandardMaterial color={darkFur} roughness={0.9} />
+      </mesh>
+
+      {/* Back legs - tucked in */}
+      <mesh position={[-0.15, 0.07, 0.1]} rotation={[0.5, 0, 0.8]}>
+        <capsuleGeometry args={[0.03, 0.1, 6, 6]} />
+        <meshStandardMaterial color={fur} roughness={0.95} />
+      </mesh>
+      <mesh position={[-0.15, 0.07, -0.1]} rotation={[-0.5, 0, 0.8]}>
+        <capsuleGeometry args={[0.03, 0.1, 6, 6]} />
+        <meshStandardMaterial color={fur} roughness={0.95} />
+      </mesh>
+
+      {/* Tail - curled around body */}
+      <mesh position={[-0.25, 0.08, 0.08]} rotation={[0.8, 0.5, 0.3]}>
+        <capsuleGeometry args={[0.02, 0.12, 6, 6]} />
+        <meshStandardMaterial color={darkFur} roughness={0.95} />
+      </mesh>
+      <mesh position={[-0.28, 0.06, 0.14]} rotation={[1.2, 0.8, 0]}>
+        <capsuleGeometry args={[0.015, 0.06, 6, 6]} />
+        <meshStandardMaterial color={darkFur} roughness={0.95} />
+      </mesh>
+
+      {/* Zzzzs */}
+      <SleepingZs origin={[0.2, 0.25, 0]} />
+    </group>
+  );
+}
+
+function Mountains() {
+  const mountainData = useMemo(() => {
+    // Generate several mountain ranges at different depths
+    const ranges: { peaks: number[]; z: number; color: string; baseY: number }[] = [
+      { peaks: [-30, 8, -20, 12, -10, 9, -3, 14, 5, 10, 12, 16, 20, 11, 28, 13, 35, 8], z: -40, color: "#2a3a4a", baseY: -2 },
+      { peaks: [-35, 6, -25, 10, -15, 7, -5, 11, 3, 8, 10, 13, 18, 9, 25, 11, 32, 6, 40, 8], z: -30, color: "#354555", baseY: -2 },
+      { peaks: [-32, 4, -22, 7, -12, 5, -4, 9, 4, 6, 11, 10, 19, 7, 27, 8, 36, 5], z: -22, color: "#405060", baseY: -2 },
+    ];
+
+    return ranges.map((range) => {
+      const verts: number[] = [];
+      const indices: number[] = [];
+      const pairs = [];
+      for (let i = 0; i < range.peaks.length; i += 2) {
+        pairs.push({ x: range.peaks[i], y: range.peaks[i + 1] });
+      }
+
+      // Build triangle strip: for each peak, add top vertex and bottom vertex
+      for (let i = 0; i < pairs.length; i++) {
+        const vi = verts.length / 3;
+        verts.push(pairs[i].x, pairs[i].y, range.z);  // top
+        verts.push(pairs[i].x, range.baseY, range.z);  // bottom
+        if (i > 0) {
+          // Two triangles forming a quad between this peak and the previous
+          indices.push(vi - 2, vi - 1, vi);
+          indices.push(vi - 1, vi + 1, vi);
+        }
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+
+      return { geometry, color: range.color };
+    });
+  }, []);
+
+  return (
+    <group>
+      {mountainData.map((m, i) => (
+        <mesh key={i} geometry={m.geometry}>
+          <meshStandardMaterial color={m.color} roughness={1} flatShading />
+        </mesh>
+      ))}
+      {/* Ground plane */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
+        <planeGeometry args={[200, 200]} />
+        <meshStandardMaterial color="#2d3d2d" roughness={1} />
+      </mesh>
+      {/* Distant trees (simple cones) */}
+      {useMemo(() => {
+        const trees: JSX.Element[] = [];
+        const rng = (seed: number) => {
+          let s = seed;
+          return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+        };
+        const rand = rng(42);
+        for (let i = 0; i < 60; i++) {
+          const x = (rand() - 0.5) * 50;
+          const z = -8 - rand() * 20;
+          const h = 1.5 + rand() * 3;
+          const r = 0.4 + rand() * 0.6;
+          trees.push(
+            <group key={i} position={[x, h * 0.5, z]}>
+              <mesh>
+                <coneGeometry args={[r, h, 5]} />
+                <meshStandardMaterial color={`hsl(${140 + rand() * 30}, ${25 + rand() * 15}%, ${18 + rand() * 10}%)`} roughness={1} flatShading />
+              </mesh>
+              <mesh position={[0, -h * 0.35, 0]}>
+                <cylinderGeometry args={[r * 0.12, r * 0.15, h * 0.3, 4]} />
+                <meshStandardMaterial color="#3d2b1f" roughness={1} />
+              </mesh>
+            </group>
+          );
+        }
+        return trees;
+      }, [])}
+    </group>
+  );
+}
+
+function PlacedHoldsGroup({ holds, wallAngleDeg, onHoldClick, eraserMode }: {
+  holds: PlacedHold[];
+  wallAngleDeg: number;
+  onHoldClick?: (id: string) => void;
+  eraserMode?: boolean;
+}) {
+  const angleRad = (wallAngleDeg * Math.PI) / 180;
+  const wallUp: V3 = [0, Math.cos(angleRad), Math.sin(angleRad)];
+  const wallNorm: V3 = [0, -Math.sin(angleRad), Math.cos(angleRad)];
+
+  const toWorld = (x: number, h: number, d: number): V3 => [
+    x,
+    h * wallUp[1] + d * wallNorm[1],
+    h * wallUp[2] + d * wallNorm[2],
+  ];
+
+  return (
+    <group>
+      {holds.map((hold) => (
+        <PlacedHold3D key={hold.id} hold={hold} wallAngleRad={angleRad} toWorld={toWorld} onClick={onHoldClick} eraserMode={eraserMode} />
+      ))}
+    </group>
+  );
+}
+
+export default function ClimbingScene({
+  config,
+  placedHolds = [],
+  onWallClick,
+  onHoldClick,
+  placingMode = false,
+  eraserMode = false,
+  ragdollParts,
+  sittingOnGround = false,
+  toppedOut = false,
+}: {
+  config: ClimberConfig;
+  placedHolds?: PlacedHold[];
+  onWallClick?: (x: number, y: number) => void;
+  onHoldClick?: (id: string) => void;
+  placingMode?: boolean;
+  eraserMode?: boolean;
+  ragdollParts?: RagdollPart[];
+  sittingOnGround?: boolean;
+  toppedOut?: boolean;
+}) {
   const forces = useMemo(() => computeForces(config), [config]);
   return (
     <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%" }}>
-      <Canvas camera={{ position: [3, 2.5, 5], fov: 50 }} style={{ background: "#1a1a2e" }}>
-        <ambientLight intensity={0.5} />
-        <directionalLight position={[3, 5, 4]} intensity={0.8} />
+      <Canvas camera={{ position: [4, 3, 8], fov: 50 }} style={{ background: "#1a1a2e" }}>
+        <Sky sunPosition={[100, 40, -50]} turbidity={8} rayleigh={0.5} mieCoefficient={0.005} mieDirectionalG={0.8} />
+        <ambientLight intensity={0.6} />
+        <directionalLight position={[3, 5, 4]} intensity={0.9} castShadow />
         <pointLight position={[-2, 3, 3]} intensity={0.3} />
-        <Wall angleDeg={config.wallAngleDeg} />
-        <Climber config={config} forces={forces} />
-        <OrbitControls makeDefault minDistance={2} maxDistance={10} target={[0, 1.5, 0.5]} />
+        <fog attach="fog" args={["#7a8fa6", 20, 60]} />
+        <Mountains />
+        <CragDog />
+        <Wall angleDeg={config.wallAngleDeg} onWallClick={onWallClick} placingMode={placingMode} />
+        <PlacedHoldsGroup holds={placedHolds} wallAngleDeg={config.wallAngleDeg} onHoldClick={onHoldClick} eraserMode={eraserMode} />
+        {ragdollParts ? <RagdollClimber parts={ragdollParts} />
+          : sittingOnGround ? <SittingClimber scale={config.heightFt / 5.75} />
+          : toppedOut ? <ToppingOutClimber scale={config.heightFt / 5.75} wallAngleDeg={config.wallAngleDeg} />
+          : <Climber config={config} forces={forces} />}
+        <OrbitControls makeDefault minDistance={2} maxDistance={20} target={[0, 1.5, 0.5]} />
         <gridHelper args={[10, 20, "#333333", "#222222"]} />
       </Canvas>
     </div>
