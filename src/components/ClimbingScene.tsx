@@ -1387,7 +1387,7 @@ function CragDog() {
   const belly = "#BFA054";
 
   return (
-    <group position={[-2.2, 0, 1.8]} rotation={[0, 0.6, 0]}>
+    <group position={[-2.2, 0, 1.8]} rotation={[0, 0.6 - Math.PI / 2, 0]}>
       {/* Body - oval lying on ground */}
       <group ref={breathRef}>
         <mesh position={[0, 0.12, 0]} rotation={[0, 0, Math.PI / 2]}>
@@ -1564,6 +1564,475 @@ function Mountains() {
   );
 }
 
+function River() {
+  const riverPath = useMemo(() => {
+    // Meandering river path points
+    const points: [number, number, number][] = [];
+    for (let i = 0; i <= 40; i++) {
+      const t = i / 40;
+      const x = -25 + t * 50;
+      const z = -12 + Math.sin(t * Math.PI * 2.5) * 3 + Math.cos(t * Math.PI * 1.2) * 2;
+      points.push([x, 0.01, z]);
+    }
+    return points;
+  }, []);
+
+  const { geometry, leftBank, rightBank } = useMemo(() => {
+    const verts: number[] = [];
+    const indices: number[] = [];
+    const uvs: number[] = [];
+    const width = 1.8;
+    const lBank: [number, number, number][] = [];
+    const rBank: [number, number, number][] = [];
+
+    for (let i = 0; i < riverPath.length; i++) {
+      const [x, y, z] = riverPath[i];
+      // Get perpendicular direction
+      let dx = 0, dz = 0;
+      if (i < riverPath.length - 1) {
+        dx = riverPath[i + 1][0] - x;
+        dz = riverPath[i + 1][2] - z;
+      } else {
+        dx = x - riverPath[i - 1][0];
+        dz = z - riverPath[i - 1][2];
+      }
+      const len = Math.sqrt(dx * dx + dz * dz);
+      const nx = -dz / len;
+      const nz = dx / len;
+
+      const vi = verts.length / 3;
+      verts.push(x + nx * width * 0.5, y, z + nz * width * 0.5);
+      verts.push(x - nx * width * 0.5, y, z - nz * width * 0.5);
+      uvs.push(0, i / riverPath.length);
+      uvs.push(1, i / riverPath.length);
+      lBank.push([x + nx * width * 0.55, 0.005, z + nz * width * 0.55]);
+      rBank.push([x - nx * width * 0.55, 0.005, z - nz * width * 0.55]);
+
+      if (i > 0) {
+        indices.push(vi - 2, vi - 1, vi);
+        indices.push(vi - 1, vi + 1, vi);
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+    geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return { geometry: geo, leftBank: lBank, rightBank: rBank };
+  }, [riverPath]);
+
+  // Animate water shimmer
+  const matRef = useRef<THREE.MeshStandardMaterial>(null);
+  useFrame(() => {
+    if (matRef.current) {
+      const t = Date.now() * 0.001;
+      matRef.current.emissiveIntensity = 0.08 + Math.sin(t * 2) * 0.04;
+    }
+  });
+
+  return (
+    <group>
+      <mesh geometry={geometry}>
+        <meshStandardMaterial
+          ref={matRef}
+          color="#1a3a5a"
+          emissive="#2a5a8a"
+          emissiveIntensity={0.08}
+          roughness={0.15}
+          metalness={0.6}
+          transparent
+          opacity={0.8}
+        />
+      </mesh>
+      {/* River banks - subtle sandy edges */}
+      {[leftBank, rightBank].map((bank, bi) => (
+        <line key={bi}>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              array={new Float32Array(bank.flat())}
+              count={bank.length}
+              itemSize={3}
+            />
+          </bufferGeometry>
+          <lineBasicMaterial color="#5a5040" linewidth={1} />
+        </line>
+      ))}
+      {/* A few river rocks */}
+      {useMemo(() => {
+        const rocks: JSX.Element[] = [];
+        const rng = (seed: number) => {
+          let s = seed;
+          return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+        };
+        const rand = rng(99);
+        for (let i = 0; i < 12; i++) {
+          const idx = Math.floor(rand() * (riverPath.length - 2)) + 1;
+          const [rx, _, rz] = riverPath[idx];
+          const offset = (rand() - 0.5) * 1.2;
+          const sz = 0.06 + rand() * 0.12;
+          rocks.push(
+            <mesh key={i} position={[rx + offset * 0.3, 0.02 + sz * 0.3, rz + offset]}>
+              <sphereGeometry args={[sz, 5, 4]} />
+              <meshStandardMaterial color={`hsl(30, 5%, ${30 + rand() * 20}%)`} roughness={0.9} flatShading />
+            </mesh>
+          );
+        }
+        return rocks;
+      }, [riverPath])}
+    </group>
+  );
+}
+
+function Deer({ startX, startZ, scale: s }: { startX: number; startZ: number; scale: number }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const legRefs = useRef<(THREE.Mesh | null)[]>([]);
+  const headRef = useRef<THREE.Group>(null);
+  const tailRef = useRef<THREE.Mesh>(null);
+
+  // Each deer has its own random walk/graze cycle
+  const behavior = useMemo(() => ({
+    walkSpeed: 0.04 + Math.random() * 0.03,
+    walkRadius: 1.5 + Math.random() * 2,
+    grazeInterval: 3 + Math.random() * 4, // seconds between grazing
+    grazeDuration: 5 + Math.random() * 8,
+    phaseOffset: Math.random() * Math.PI * 2,
+    dirOffset: Math.random() * Math.PI * 2,
+  }), []);
+
+  useFrame(() => {
+    if (!groupRef.current) return;
+    const t = Date.now() * 0.001;
+    const phase = t * 0.08 + behavior.phaseOffset;
+
+    // Walk in a gentle loop
+    const x = startX + Math.sin(phase + behavior.dirOffset) * behavior.walkRadius;
+    const z = startZ + Math.cos(phase * 0.7 + behavior.dirOffset) * behavior.walkRadius * 0.6;
+    groupRef.current.position.set(x, 0, z);
+
+    // Face movement direction
+    const dx = Math.cos(phase + behavior.dirOffset) * behavior.walkRadius * 0.3;
+    const dz = -Math.sin(phase * 0.7 + behavior.dirOffset) * behavior.walkRadius * 0.6 * 0.7;
+    groupRef.current.rotation.y = Math.atan2(dx, dz);
+
+    // Grazing: head dips down periodically
+    const grazeCycle = (t + behavior.phaseOffset) % (behavior.grazeInterval + behavior.grazeDuration);
+    const isGrazing = grazeCycle > behavior.grazeInterval;
+    if (headRef.current) {
+      const targetRot = isGrazing ? 1.2 : 0.05;
+      headRef.current.rotation.x += (targetRot - headRef.current.rotation.x) * 0.05;
+    }
+
+    // Leg animation (walk cycle)
+    const legSwing = isGrazing ? 0 : Math.sin(t * 1.5 + behavior.phaseOffset);
+    for (let i = 0; i < 4; i++) {
+      const leg = legRefs.current[i];
+      if (leg) {
+        const sign = i % 2 === 0 ? 1 : -1;
+        const frontBack = i < 2 ? 1 : -1;
+        leg.rotation.x = legSwing * 0.25 * sign * frontBack * (isGrazing ? 0.1 : 1);
+      }
+    }
+
+    // Tail flick
+    if (tailRef.current) {
+      tailRef.current.rotation.x = -0.5 + Math.sin(t * 2 + behavior.phaseOffset * 3) * 0.3;
+    }
+  });
+
+  const body = "#b5864a";
+  const belly = "#d4b078";
+  const legColor = "#8a6830";
+
+  return (
+    <group ref={groupRef} scale={[s, s, s]}>
+      {/* Body - elongated box */}
+      <mesh position={[0, 0.55, 0]} scale={[0.18, 0.16, 0.45]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial color={body} roughness={0.9} flatShading />
+      </mesh>
+      {/* Chest - slightly wider front */}
+      <mesh position={[0, 0.57, 0.18]} scale={[0.16, 0.18, 0.12]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial color={body} roughness={0.9} flatShading />
+      </mesh>
+      {/* Haunches */}
+      <mesh position={[0, 0.54, -0.18]} scale={[0.15, 0.17, 0.1]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial color={body} roughness={0.9} flatShading />
+      </mesh>
+      {/* Belly underside */}
+      <mesh position={[0, 0.48, 0]} scale={[0.14, 0.06, 0.35]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial color={belly} roughness={0.9} flatShading />
+      </mesh>
+      {/* Legs - thin cylinders */}
+      {[[-0.07, 0.2, 0.17], [0.07, 0.2, 0.17], [-0.07, 0.2, -0.17], [0.07, 0.2, -0.17]].map((pos, i) => (
+        <mesh key={i} ref={(el) => { legRefs.current[i] = el; }} position={pos as V3}>
+          <cylinderGeometry args={[0.018, 0.022, 0.42, 4]} />
+          <meshStandardMaterial color={legColor} roughness={0.9} flatShading />
+        </mesh>
+      ))}
+      {/* Neck + Head group */}
+      <group ref={headRef} position={[0, 0.65, 0.25]}>
+        {/* Neck */}
+        <mesh position={[0, 0.1, 0.05]} rotation={[0.3, 0, 0]}>
+          <cylinderGeometry args={[0.03, 0.05, 0.22, 4]} />
+          <meshStandardMaterial color={body} roughness={0.9} flatShading />
+        </mesh>
+        {/* Head */}
+        <mesh position={[0, 0.18, 0.1]} scale={[0.7, 0.8, 1.1]}>
+          <boxGeometry args={[0.1, 0.1, 0.12]} />
+          <meshStandardMaterial color={body} roughness={0.9} flatShading />
+        </mesh>
+        {/* Snout */}
+        <mesh position={[0, 0.15, 0.18]} scale={[0.6, 0.5, 1]}>
+          <boxGeometry args={[0.06, 0.05, 0.06]} />
+          <meshStandardMaterial color="#a07840" roughness={0.9} flatShading />
+        </mesh>
+        {/* Ears */}
+        {[[-0.06, 0.24, 0.08], [0.06, 0.24, 0.08]].map((pos, i) => (
+          <mesh key={i} position={pos as V3} rotation={[0.3, i === 0 ? -0.3 : 0.3, 0]}>
+            <coneGeometry args={[0.025, 0.06, 4]} />
+            <meshStandardMaterial color={body} roughness={0.9} flatShading />
+          </mesh>
+        ))}
+        {/* Antlers (small) */}
+        {[[-0.04, 0.26, 0.06], [0.04, 0.26, 0.06]].map((pos, i) => (
+          <group key={i} position={pos as V3}>
+            <mesh rotation={[0.2, 0, i === 0 ? -0.2 : 0.2]}>
+              <cylinderGeometry args={[0.008, 0.012, 0.12, 4]} />
+              <meshStandardMaterial color="#6b5030" roughness={1} flatShading />
+            </mesh>
+            <mesh position={[i === 0 ? -0.02 : 0.02, 0.05, 0.01]} rotation={[0.3, 0, i === 0 ? -0.5 : 0.5]}>
+              <cylinderGeometry args={[0.006, 0.008, 0.06, 3]} />
+              <meshStandardMaterial color="#6b5030" roughness={1} flatShading />
+            </mesh>
+          </group>
+        ))}
+      </group>
+      {/* Tail */}
+      <mesh ref={tailRef} position={[0, 0.6, -0.25]} rotation={[-0.5, 0, 0]}>
+        <coneGeometry args={[0.03, 0.08, 4]} />
+        <meshStandardMaterial color="#e8d8b8" roughness={0.9} flatShading />
+      </mesh>
+    </group>
+  );
+}
+
+function Tent() {
+  const tentGeo = useMemo(() => {
+    // Triangular prism: ridge at top, base width 1.6, length 2.0, height 1.1
+    const w = 0.8, h = 1.1, d = 1.0;
+    // Vertices: front-left, front-right, front-top, back-left, back-right, back-top
+    const fl: V3 = [-w, 0, d], fr: V3 = [w, 0, d], ft: V3 = [0, h, d];
+    const bl: V3 = [-w, 0, -d], br: V3 = [w, 0, -d], bt: V3 = [0, h, -d];
+
+    // Left slope, right slope, floor
+    const leftVerts = [...bl, ...fl, ...ft, ...bl, ...ft, ...bt];
+    const rightVerts = [...fr, ...br, ...bt, ...fr, ...bt, ...ft];
+    const floorVerts = [...fl, ...fr, ...br, ...fl, ...br, ...bl];
+    // Back wall (solid triangle)
+    const backVerts = [...bl, ...br, ...bt];
+
+    return { leftVerts, rightVerts, floorVerts, backVerts };
+  }, []);
+
+  // Front wall: two triangles with door cutout in center
+  const frontGeo = useMemo(() => {
+    const w = 0.8, h = 1.1, d = 1.0;
+    const doorW = 0.25, doorH = 0.6;
+    // Left portion of front: triangle from fl to door-left to top
+    // Right portion: triangle from door-right to fr to top
+    // Above door: small triangle from door-left to door-right to top
+    const verts = [
+      // Left side of door
+      -w, 0, d,  -doorW, 0, d,  0, h, d,
+      -w, 0, d,  -doorW, doorH, d,  0, h, d,
+      -w, 0, d,  -doorW, 0, d,  -doorW, doorH, d,
+      // Right side of door
+      doorW, 0, d,  w, 0, d,  0, h, d,
+      doorW, doorH, d,  w, 0, d,  0, h, d,
+      doorW, 0, d,  doorW, doorH, d,  w, 0, d,
+      // Above door
+      -doorW, doorH, d,  doorW, doorH, d,  0, h, d,
+    ];
+    return new Float32Array(verts);
+  }, []);
+
+  return (
+    <group position={[5, 0, -6]} rotation={[0, -0.4, 0]}>
+      {/* Left slope */}
+      <mesh>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" array={new Float32Array(tentGeo.leftVerts)} count={6} itemSize={3} />
+        </bufferGeometry>
+        <meshStandardMaterial color="#c45c2c" roughness={0.85} side={THREE.DoubleSide} flatShading />
+      </mesh>
+      {/* Right slope */}
+      <mesh>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" array={new Float32Array(tentGeo.rightVerts)} count={6} itemSize={3} />
+        </bufferGeometry>
+        <meshStandardMaterial color="#b84e22" roughness={0.85} side={THREE.DoubleSide} flatShading />
+      </mesh>
+      {/* Back wall */}
+      <mesh>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" array={new Float32Array(tentGeo.backVerts)} count={3} itemSize={3} />
+        </bufferGeometry>
+        <meshStandardMaterial color="#a84520" roughness={0.85} side={THREE.DoubleSide} flatShading />
+      </mesh>
+      {/* Front wall with door cutout */}
+      <mesh>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" array={frontGeo} count={frontGeo.length / 3} itemSize={3} />
+        </bufferGeometry>
+        <meshStandardMaterial color="#d4663a" roughness={0.85} side={THREE.DoubleSide} flatShading />
+      </mesh>
+      {/* Door opening - dark interior */}
+      <mesh position={[0, 0.3, 1.001]}>
+        <planeGeometry args={[0.5, 0.6]} />
+        <meshStandardMaterial color="#1a0a00" roughness={1} />
+      </mesh>
+      {/* Floor */}
+      <mesh>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" array={new Float32Array(tentGeo.floorVerts)} count={6} itemSize={3} />
+        </bufferGeometry>
+        <meshStandardMaterial color="#993d18" roughness={0.95} side={THREE.DoubleSide} />
+      </mesh>
+      {/* Ridge pole */}
+      <mesh position={[0, 1.1, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.015, 0.015, 2.0, 4]} />
+        <meshStandardMaterial color="#666" roughness={0.9} />
+      </mesh>
+    </group>
+  );
+}
+
+function Campfire() {
+  const flameRef = useRef<THREE.Group>(null);
+  const sparkRef = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const sparkCount = 15;
+
+  const sparks = useMemo(() =>
+    Array.from({ length: sparkCount }, () => ({
+      offset: Math.random() * 3,
+      dx: (Math.random() - 0.5) * 0.4,
+      dz: (Math.random() - 0.5) * 0.4,
+      speed: 0.5 + Math.random() * 0.5,
+    })), []);
+
+  useFrame(() => {
+    const t = Date.now() * 0.001;
+    // Flame flicker
+    if (flameRef.current) {
+      flameRef.current.scale.y = 1 + Math.sin(t * 8) * 0.15 + Math.sin(t * 13) * 0.1;
+      flameRef.current.scale.x = 1 + Math.sin(t * 6 + 1) * 0.08;
+      flameRef.current.rotation.y = t * 0.5;
+    }
+    // Sparks rising
+    if (sparkRef.current) {
+      for (let i = 0; i < sparkCount; i++) {
+        const s = sparks[i];
+        const age = ((t * s.speed + s.offset) % 2) / 2;
+        dummy.position.set(s.dx * age, 0.3 + age * 1.2, s.dz * age);
+        const sc = 0.015 * (1 - age);
+        dummy.scale.set(sc, sc, sc);
+        dummy.updateMatrix();
+        sparkRef.current.setMatrixAt(i, dummy.matrix);
+      }
+      sparkRef.current.instanceMatrix.needsUpdate = true;
+    }
+  });
+
+  return (
+    <group position={[3, 0, -3.5]}>
+      {/* Fire ring stones */}
+      {Array.from({ length: 8 }, (_, i) => {
+        const a = (i / 8) * Math.PI * 2;
+        return (
+          <mesh key={i} position={[Math.cos(a) * 0.35, 0.06, Math.sin(a) * 0.35]}>
+            <boxGeometry args={[0.12, 0.1, 0.1]} />
+            <meshStandardMaterial color={`hsl(20, 5%, ${28 + (i % 3) * 5}%)`} roughness={1} flatShading />
+          </mesh>
+        );
+      })}
+      {/* Logs in fire (criss-crossed) */}
+      <mesh position={[0, 0.08, 0]} rotation={[0, 0.3, 0]}>
+        <cylinderGeometry args={[0.04, 0.035, 0.5, 5]} />
+        <meshStandardMaterial color="#3d2010" roughness={1} flatShading />
+      </mesh>
+      <mesh position={[0, 0.1, 0]} rotation={[0, -0.8, 0]}>
+        <cylinderGeometry args={[0.035, 0.04, 0.45, 5]} />
+        <meshStandardMaterial color="#4a2815" roughness={1} flatShading />
+      </mesh>
+      <mesh position={[0, 0.14, 0]} rotation={[0, 1.2, Math.PI / 2]}>
+        <cylinderGeometry args={[0.03, 0.035, 0.4, 5]} />
+        <meshStandardMaterial color="#352010" roughness={1} flatShading />
+      </mesh>
+      {/* Flames */}
+      <group ref={flameRef}>
+        <mesh position={[0, 0.35, 0]}>
+          <coneGeometry args={[0.12, 0.4, 5]} />
+          <meshStandardMaterial color="#ff6600" emissive="#ff4400" emissiveIntensity={2} transparent opacity={0.85} />
+        </mesh>
+        <mesh position={[0.05, 0.3, 0.03]}>
+          <coneGeometry args={[0.08, 0.3, 4]} />
+          <meshStandardMaterial color="#ffaa00" emissive="#ff6600" emissiveIntensity={2} transparent opacity={0.7} />
+        </mesh>
+        <mesh position={[-0.04, 0.28, -0.02]}>
+          <coneGeometry args={[0.06, 0.25, 4]} />
+          <meshStandardMaterial color="#ffcc33" emissive="#ff8800" emissiveIntensity={2} transparent opacity={0.6} />
+        </mesh>
+      </group>
+      {/* Fire glow light */}
+      <pointLight position={[0, 0.4, 0]} color="#ff6622" intensity={0.5} distance={5} />
+      {/* Sparks */}
+      <instancedMesh ref={sparkRef} args={[undefined, undefined, sparkCount]}>
+        <sphereGeometry args={[1, 4, 3]} />
+        <meshBasicMaterial color="#ffaa33" />
+      </instancedMesh>
+      {/* Sitting logs around fire */}
+      {/* Sitting log 1 - front */}
+      <mesh position={[0.7, 0.1, 0.3]} rotation={[Math.PI / 2, 0, 0.5]}>
+        <cylinderGeometry args={[0.09, 0.1, 0.5, 6]} />
+        <meshStandardMaterial color="#5a3a1a" roughness={0.95} flatShading />
+      </mesh>
+      {/* Sitting log 2 - left */}
+      <mesh position={[-0.6, 0.1, 0.4]} rotation={[Math.PI / 2, 0, -0.6]}>
+        <cylinderGeometry args={[0.1, 0.11, 0.45, 6]} />
+        <meshStandardMaterial color="#4d3015" roughness={0.95} flatShading />
+      </mesh>
+      {/* Sitting log 3 - back right */}
+      <mesh position={[0.3, 0.1, -0.7]} rotation={[Math.PI / 2, 0, 1.2]}>
+        <cylinderGeometry args={[0.09, 0.095, 0.45, 6]} />
+        <meshStandardMaterial color="#5e3818" roughness={0.95} flatShading />
+      </mesh>
+    </group>
+  );
+}
+
+function DeerHerd() {
+  const deerPositions = useMemo(() => [
+    { x: -12, z: -14, scale: 1.1 },
+    { x: -9, z: -16, scale: 1.2 },
+    { x: -14, z: -15, scale: 1.0 },
+    { x: 10, z: -13, scale: 1.15 },
+  ], []);
+
+  return (
+    <group>
+      {deerPositions.map((d, i) => (
+        <Deer key={i} startX={d.x} startZ={d.z} scale={d.scale} />
+      ))}
+    </group>
+  );
+}
+
 function PlacedHoldsGroup({ holds, wallAngleDeg, onHoldClick, eraserMode }: {
   holds: PlacedHold[];
   wallAngleDeg: number;
@@ -1614,12 +2083,21 @@ export default function ClimbingScene({
   return (
     <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%" }}>
       <Canvas camera={{ position: [4, 3, 8], fov: 50 }} style={{ background: "#1a1a2e" }}>
-        <Sky sunPosition={[100, 40, -50]} turbidity={8} rayleigh={0.5} mieCoefficient={0.005} mieDirectionalG={0.8} />
+        <Sky sunPosition={[100, 60, -50]} turbidity={6} rayleigh={0.5} mieCoefficient={0.005} mieDirectionalG={0.8} />
+        {/* Sun disc */}
+        <mesh position={[100, 60, -50]}>
+          <sphereGeometry args={[5, 16, 16]} />
+          <meshBasicMaterial color="#fff8e0" />
+        </mesh>
         <ambientLight intensity={0.6} />
-        <directionalLight position={[3, 5, 4]} intensity={0.9} castShadow />
+        <directionalLight position={[100, 60, -50]} intensity={0.9} castShadow />
         <pointLight position={[-2, 3, 3]} intensity={0.3} />
         <fog attach="fog" args={["#7a8fa6", 20, 60]} />
         <Mountains />
+        <River />
+        <DeerHerd />
+        <Tent />
+        <Campfire />
         <CragDog />
         <Wall angleDeg={config.wallAngleDeg} onWallClick={onWallClick} placingMode={placingMode} />
         <PlacedHoldsGroup holds={placedHolds} wallAngleDeg={config.wallAngleDeg} onHoldClick={onHoldClick} eraserMode={eraserMode} />
