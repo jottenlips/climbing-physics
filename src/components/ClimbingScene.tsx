@@ -1934,10 +1934,10 @@ function Rocks() {
     }
 
     // Small rocks near the wall base
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 7; i++) {
       const sz = 0.05 + rand() * 0.12;
       result.push({
-        pos: [(rand() - 0.5) * 3, sz * 0.4, 0.3 + rand() * 1.5],
+        pos: [(rand() - 0.5) * 4, sz * 0.4, 1.5 + rand() * 2],
         scale: [sz * (0.8 + rand() * 0.6), sz * (0.6 + rand() * 0.4), sz * (0.7 + rand() * 0.5)],
         rot: [rand() * 0.5, rand() * Math.PI * 2, rand() * 0.3],
         color: `hsl(${25 + rand() * 15}, ${4 + rand() * 6}%, ${30 + rand() * 18}%)`,
