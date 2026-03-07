@@ -71,10 +71,56 @@ const TWIST_PRESETS: Record<string, { twist: number; lKnee: number; rKnee: numbe
 const HAND_PULL_OPTIONS: PullDirection[] = ["down", "side", "undercling", "gaston", "sloper"];
 const FOOT_PULL_OPTIONS: PullDirection[] = ["edge", "smear", "toe-hook", "heel-hook", "toe-cam", "backstep"];
 
+export interface WallSegment {
+  height: number;   // height of this segment in meters
+  angleDeg: number;  // 0 = vertical, positive = overhang, negative = slab
+}
+
+// Given wall-local (x, wallY) and segments, compute world position and the segment's angle
+export function segmentToWorld(x: number, wallY: number, segments: WallSegment[]): { pos: [number, number, number]; angleDeg: number } {
+  let curWorldY = 0;
+  let curWorldZ = 0;
+  let remaining = wallY;
+  for (const seg of segments) {
+    const angleRad = (seg.angleDeg * Math.PI) / 180;
+    if (remaining <= seg.height) {
+      const wy = curWorldY + remaining * Math.cos(angleRad);
+      const wz = curWorldZ + remaining * Math.sin(angleRad);
+      return { pos: [x, wy, wz], angleDeg: seg.angleDeg };
+    }
+    curWorldY += seg.height * Math.cos(angleRad);
+    curWorldZ += seg.height * Math.sin(angleRad);
+    remaining -= seg.height;
+  }
+  // Past top of wall: extend last segment
+  const last = segments[segments.length - 1];
+  const angleRad = (last.angleDeg * Math.PI) / 180;
+  return {
+    pos: [x, curWorldY + remaining * Math.cos(angleRad), curWorldZ + remaining * Math.sin(angleRad)],
+    angleDeg: last.angleDeg,
+  };
+}
+
+// Get the angle at a given wallY
+export function angleAtHeight(wallY: number, segments: WallSegment[]): number {
+  let remaining = wallY;
+  for (const seg of segments) {
+    if (remaining <= seg.height) return seg.angleDeg;
+    remaining -= seg.height;
+  }
+  return segments[segments.length - 1].angleDeg;
+}
+
+// Total wall height
+export function totalWallHeight(segments: WallSegment[]): number {
+  return segments.reduce((sum, s) => sum + s.height, 0);
+}
+
 interface RoutePreset {
   name: string;
   grade: string;
   wallAngle: number;
+  segments?: WallSegment[];
   holds: Omit<PlacedHold, "id">[];
 }
 
@@ -245,6 +291,149 @@ const ROUTE_PRESETS: RoutePreset[] = [
       { x: 0.0, y: 3.8, type: "jug", direction: "up", usage: "hand" },
     ],
   },
+  {
+    name: "Roof to Vert", grade: "V4", wallAngle: 80,
+    segments: [{ height: 1.5, angleDeg: 0 }, { height: 1.5, angleDeg: 80 }, { height: 2, angleDeg: 0 }],
+    holds: [
+      { x: -0.3, y: 0.8, type: "jug", direction: "up", usage: "both" },
+      { x: 0.3, y: 0.9, type: "jug", direction: "up", usage: "both" },
+      { x: -0.2, y: 1.3, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.1, y: 1.0, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.1, y: 1.2, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.2, y: 1.7, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.3, y: 2.1, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 1.6, type: "jug", direction: "down", usage: "foot" },
+      { x: -0.2, y: 2.0, type: "jug", direction: "down", usage: "foot" },
+      { x: 0.1, y: 2.5, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 2.4, type: "jug", direction: "down", usage: "foot" },
+      { x: -0.2, y: 3.0, type: "crimp", direction: "up", usage: "hand" },
+      { x: 0.2, y: 3.4, type: "crimp", direction: "up", usage: "hand" },
+      { x: -0.1, y: 2.9, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.1, y: 3.3, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.2, y: 3.8, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.1, y: 4.2, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 3.7, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.1, y: 4.1, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.0, y: 4.8, type: "jug", direction: "up", usage: "hand" },
+    ],
+  },
+  {
+    name: "Cave Exit", grade: "V6", wallAngle: 60,
+    segments: [{ height: 1.0, angleDeg: 60 }, { height: 1.5, angleDeg: 30 }, { height: 2.5, angleDeg: 0 }],
+    holds: [
+      { x: -0.2, y: 0.5, type: "jug", direction: "up", usage: "both" },
+      { x: 0.3, y: 0.6, type: "jug", direction: "up", usage: "both" },
+      { x: 0.0, y: 0.3, type: "jug", direction: "down", usage: "foot" },
+      { x: -0.3, y: 1.0, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.1, y: 0.8, type: "jug", direction: "down", usage: "foot" },
+      { x: 0.2, y: 1.4, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.1, y: 1.3, type: "jug", direction: "down", usage: "foot" },
+      { x: -0.2, y: 1.8, type: "pinch", direction: "up", usage: "hand" },
+      { x: 0.3, y: 2.2, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 1.7, type: "foot-edge", direction: "up", usage: "foot" },
+      { x: -0.1, y: 2.1, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.1, y: 2.7, type: "crimp", direction: "up", usage: "hand" },
+      { x: -0.3, y: 3.1, type: "crimp", direction: "up", usage: "hand" },
+      { x: 0.0, y: 2.6, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.2, y: 3.0, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.1, y: 3.5, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.2, y: 3.9, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.1, y: 3.4, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.1, y: 3.8, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.2, y: 4.3, type: "crimp", direction: "up", usage: "hand" },
+      { x: 0.1, y: 4.6, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 4.2, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.0, y: 4.8, type: "jug", direction: "up", usage: "hand" },
+    ],
+  },
+  {
+    name: "Slab to Overhang", grade: "V3", wallAngle: -10,
+    segments: [{ height: 2, angleDeg: -10 }, { height: 1.5, angleDeg: 35 }, { height: 1.5, angleDeg: 0 }],
+    holds: [
+      { x: -0.2, y: 0.6, type: "sloper", direction: "up", usage: "both" },
+      { x: 0.3, y: 0.7, type: "sloper", direction: "up", usage: "both" },
+      { x: 0.0, y: 0.4, type: "smear-pad", direction: "up", usage: "foot" },
+      { x: -0.1, y: 0.8, type: "smear-pad", direction: "up", usage: "foot" },
+      { x: 0.1, y: 1.2, type: "crimp", direction: "up", usage: "hand" },
+      { x: -0.3, y: 1.6, type: "crimp", direction: "up", usage: "hand" },
+      { x: 0.0, y: 1.1, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.2, y: 1.5, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.2, y: 2.1, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.1, y: 2.5, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 2.0, type: "jug", direction: "down", usage: "foot" },
+      { x: -0.2, y: 2.4, type: "jug", direction: "down", usage: "foot" },
+      { x: 0.3, y: 2.9, type: "crimp", direction: "up", usage: "hand" },
+      { x: -0.2, y: 3.3, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.1, y: 2.8, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.1, y: 3.2, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.1, y: 3.8, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.2, y: 4.2, type: "crimp", direction: "up", usage: "hand" },
+      { x: 0.0, y: 3.7, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.1, y: 4.1, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.2, y: 4.6, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 4.5, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.0, y: 4.8, type: "jug", direction: "up", usage: "hand" },
+    ],
+  },
+  {
+    name: "Full Roof", grade: "V7", wallAngle: 85,
+    segments: [{ height: 1, angleDeg: 0 }, { height: 2, angleDeg: 85 }, { height: 2, angleDeg: 0 }],
+    holds: [
+      { x: -0.2, y: 0.5, type: "jug", direction: "up", usage: "both" },
+      { x: 0.2, y: 0.6, type: "jug", direction: "up", usage: "both" },
+      { x: 0.0, y: 0.3, type: "foot-edge", direction: "up", usage: "foot" },
+      { x: -0.3, y: 0.9, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.1, y: 0.7, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.2, y: 1.3, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.1, y: 1.7, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 1.2, type: "jug", direction: "down", usage: "foot" },
+      { x: -0.2, y: 1.6, type: "jug", direction: "down", usage: "foot" },
+      { x: 0.3, y: 2.1, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.2, y: 2.5, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.1, y: 2.0, type: "jug", direction: "down", usage: "foot" },
+      { x: -0.1, y: 2.4, type: "jug", direction: "down", usage: "foot" },
+      { x: 0.0, y: 2.9, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.2, y: 3.3, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.1, y: 2.8, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.1, y: 3.2, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.2, y: 3.8, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.1, y: 4.2, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 3.7, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.1, y: 4.1, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.2, y: 4.6, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 4.5, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.0, y: 4.8, type: "jug", direction: "up", usage: "hand" },
+    ],
+  },
+  {
+    name: "Kick to Roof", grade: "V5", wallAngle: 20,
+    segments: [{ height: 2, angleDeg: 20 }, { height: 1, angleDeg: 70 }, { height: 2, angleDeg: 10 }],
+    holds: [
+      { x: -0.3, y: 0.7, type: "jug", direction: "up", usage: "both" },
+      { x: 0.2, y: 0.8, type: "jug", direction: "up", usage: "both" },
+      { x: -0.1, y: 0.5, type: "foot-edge", direction: "up", usage: "foot" },
+      { x: 0.1, y: 0.9, type: "foot-edge", direction: "up", usage: "foot" },
+      { x: 0.0, y: 1.3, type: "pinch", direction: "up", usage: "hand" },
+      { x: -0.3, y: 1.7, type: "crimp", direction: "up", usage: "hand" },
+      { x: 0.1, y: 1.2, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.2, y: 1.6, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.2, y: 2.1, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.1, y: 2.5, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 2.0, type: "jug", direction: "down", usage: "foot" },
+      { x: -0.2, y: 2.4, type: "jug", direction: "down", usage: "foot" },
+      { x: 0.3, y: 2.9, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.2, y: 3.3, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.1, y: 2.8, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.1, y: 3.2, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.1, y: 3.8, type: "jug", direction: "up", usage: "hand" },
+      { x: -0.2, y: 4.2, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 3.7, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: -0.1, y: 4.1, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.2, y: 4.6, type: "jug", direction: "up", usage: "hand" },
+      { x: 0.0, y: 4.5, type: "foot-chip", direction: "up", usage: "foot" },
+      { x: 0.0, y: 4.8, type: "jug", direction: "up", usage: "hand" },
+    ],
+  },
 ];
 
 // --- Compact slider ---
@@ -276,6 +465,46 @@ const DEFAULT_STATE: ClimberState = {
   ...comfortablePose(45),
 };
 
+// --- Share/Load route via URL ---
+interface SharedRoute {
+  s: WallSegment[];                       // segments
+  h: [number, number, string, string, string][]; // holds: [x, y, type, dir, usage]
+}
+
+function encodeRoute(segments: WallSegment[], holds: PlacedHold[]): string {
+  const data: SharedRoute = {
+    s: segments,
+    h: holds.map(h => [
+      Math.round(h.x * 100) / 100,
+      Math.round(h.y * 100) / 100,
+      h.type, h.direction, h.usage,
+    ]),
+  };
+  return btoa(JSON.stringify(data));
+}
+
+function decodeRoute(encoded: string): { segments: WallSegment[]; holds: PlacedHold[] } | null {
+  try {
+    const data: SharedRoute = JSON.parse(atob(encoded));
+    const holds: PlacedHold[] = data.h.map(([x, y, type, direction, usage]) => ({
+      id: makeHoldId(), x, y,
+      type: type as HoldType,
+      direction: direction as HoldDirection,
+      usage: usage as HoldUsage,
+    }));
+    return { segments: data.s, holds };
+  } catch {
+    return null;
+  }
+}
+
+function getSharedRouteFromURL(): { segments: WallSegment[]; holds: PlacedHold[] } | null {
+  const params = new URLSearchParams(window.location.search);
+  const route = params.get("route");
+  if (!route) return null;
+  return decodeRoute(route);
+}
+
 // Bottom sheet panel types
 type PanelType = "none" | "routes" | "holds" | "settings" | "forces";
 
@@ -283,6 +512,7 @@ function App() {
   const [state, setState] = useState<ClimberState>(DEFAULT_STATE);
   const [activePreset, setActivePreset] = useState("45 Steep");
   const [activeTwist, setActiveTwist] = useState("Square");
+  const [wallSegments, setWallSegments] = useState<WallSegment[]>([{ height: 4, angleDeg: 45 }]);
 
   // Hold placement
   const [placedHolds, setPlacedHolds] = useState<PlacedHold[]>([]);
@@ -294,6 +524,43 @@ function App() {
 
   // UI state
   const [activePanel, setActivePanel] = useState<PanelType>("none");
+  const [showCopied, setShowCopied] = useState(false);
+
+  // Load shared route from URL on mount
+  useEffect(() => {
+    const shared = getSharedRouteFromURL();
+    if (shared && shared.holds.length > 0) {
+      setPlacedHolds(shared.holds);
+      setWallSegments(shared.segments);
+      const angle = shared.segments[0]?.angleDeg ?? 0;
+      const handUsable = [...shared.holds].filter(h => h.usage !== "foot").sort((a, b) => a.y - b.y);
+      if (handUsable.length >= 1) {
+        const lh = handUsable[0]; const rh = handUsable[1] || handUsable[0];
+        const [left, right] = lh.x <= rh.x ? [lh, rh] : [rh, lh];
+        const footY = Math.max(0.15, Math.min(left.y, right.y) - 0.6);
+        setState(prev => ({
+          ...prev, ...DEFAULT_STATE, wallAngleDeg: angle,
+          lhX: left.x, lhY: left.y, rhX: right.x, rhY: right.y,
+          lfX: left.x, lfY: footY, rfX: right.x, rfY: footY,
+        }));
+      }
+    }
+  }, []);
+
+  const shareRoute = useCallback(() => {
+    const encoded = encodeRoute(wallSegments, placedHolds);
+    const url = new URL(window.location.href);
+    url.searchParams.set("route", encoded);
+    window.history.replaceState(null, "", url.toString());
+    navigator.clipboard.writeText(url.toString()).then(() => {
+      setShowCopied(true);
+      setTimeout(() => setShowCopied(false), 2000);
+    }).catch(() => {
+      // Fallback: just update URL
+      setShowCopied(true);
+      setTimeout(() => setShowCopied(false), 2000);
+    });
+  }, [wallSegments, placedHolds]);
 
   // Start holds derived from climber state
   const startHolds = useMemo<StartHolds>(() => ({
@@ -359,14 +626,12 @@ function App() {
 
   const buildRagdoll = useCallback((s: ClimberState): RagdollPart[] => {
     const scale = s.heightFt / 5.75;
-    const angleRad = (s.wallAngleDeg * Math.PI) / 180;
-    const wallUp: [number, number, number] = [0, Math.cos(angleRad), Math.sin(angleRad)];
-    const wallNorm: [number, number, number] = [0, -Math.sin(angleRad), Math.cos(angleRad)];
-    const toWorld = (x: number, h: number, d: number): [number, number, number] => [
-      x,
-      h * wallUp[1] + d * wallNorm[1],
-      h * wallUp[2] + d * wallNorm[2],
-    ];
+    const toWorld = (x: number, h: number, d: number): [number, number, number] => {
+      const { pos, angleDeg } = segmentToWorld(x, h, wallSegments);
+      const ar = (angleDeg * Math.PI) / 180;
+      const sn: [number, number, number] = [0, -Math.sin(ar), Math.cos(ar)];
+      return [pos[0], pos[1] + d * sn[1], pos[2] + d * sn[2]];
+    };
 
     const cogX = (s.lhX + s.rhX + s.lfX + s.rfX) / 4;
     const cogY = (s.lhY + s.rhY + s.lfY + s.rfY) / 4;
@@ -495,6 +760,7 @@ function App() {
     stopSim();
     const holds = preset.holds.map(h => ({ ...h, id: makeHoldId() }));
     setPlacedHolds(holds);
+    setWallSegments(preset.segments || [{ height: 4, angleDeg: preset.wallAngle }]);
     const handUsable = [...holds].filter(h => h.usage !== "foot").sort((a, b) => a.y - b.y);
     const lh = handUsable[0]; const rh = handUsable[1] || handUsable[0];
     const [left, right] = lh.x <= rh.x ? [lh, rh] : [rh, lh];
@@ -707,6 +973,7 @@ function App() {
     const angleDeg = PRESET_ANGLES[name];
     if (angleDeg === undefined) return;
     setActivePreset(name);
+    setWallSegments([{ height: 4, angleDeg }]);
     setState((prev) => ({
       ...prev, wallAngleDeg: angleDeg, ...comfortablePose(angleDeg),
       ...(angleDeg <= 0 ? { leftFootOn: true, rightFootOn: true } : {}),
@@ -740,10 +1007,10 @@ function App() {
 
   // ========================= RENDER =========================
   const pill: React.CSSProperties = {
-    padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer",
-    fontSize: 13, fontFamily: "system-ui, -apple-system, sans-serif", fontWeight: 600,
-    touchAction: "manipulation", color: "#fff", minHeight: 44, minWidth: 44,
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+    padding: "7px 10px", borderRadius: 8, border: "none", cursor: "pointer",
+    fontSize: 12, fontFamily: "system-ui, -apple-system, sans-serif", fontWeight: 600,
+    touchAction: "manipulation", color: "#fff", minHeight: 36, minWidth: 36,
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
   };
 
   const chip: React.CSSProperties = {
@@ -757,7 +1024,7 @@ function App() {
     <div style={{ width: "100vw", height: "100vh", position: "relative", overflow: "hidden", fontFamily: "system-ui, -apple-system, sans-serif" }}>
 
       {/* 3D Scene */}
-      <ClimbingScene config={config} placedHolds={allHoldsOnWall}
+      <ClimbingScene config={config} placedHolds={allHoldsOnWall} wallSegments={wallSegments}
         onWallClick={handleWallClick} onHoldClick={handleHoldClick}
         placingMode={placingMode} eraserMode={eraserMode}
         ragdollParts={ragdollParts} sittingOnGround={sittingOnGround} toppedOut={toppedOut} />
@@ -904,7 +1171,7 @@ function App() {
         position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 20,
         background: "rgba(20,20,25,0.95)", borderTop: "1px solid #333",
         backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
-        padding: "10px 12px calc(48px + env(safe-area-inset-bottom, 0px))",
+        padding: "8px 10px calc(44px + env(safe-area-inset-bottom, 0px))",
         display: "flex", flexDirection: "column", alignItems: "center",
       }}><div style={{ width: "100%", maxWidth: 520 }}>
         {/* Main action buttons */}
@@ -927,9 +1194,15 @@ function App() {
                 &#9654; Play
               </button>
               <button onClick={() => togglePanel("settings")}
-                style={{ ...pill, background: activePanel === "settings" ? "#4488ff" : "#333", width: 44 }}>
+                style={{ ...pill, background: activePanel === "settings" ? "#4488ff" : "#333", width: 44, fontSize: 18 }}>
                 &#9881;
               </button>
+              {placedHolds.length > 0 && (
+                <button onClick={shareRoute}
+                  style={{ ...pill, background: showCopied ? "#44aa44" : "#555", flex: 1, maxWidth: 100 }}>
+                  {showCopied ? "✓ Copied" : "↗ Share"}
+                </button>
+              )}
             </>
           ) : (
             <div style={{ display: "flex", gap: 6, flex: 1, maxWidth: 300 }}>
@@ -994,20 +1267,24 @@ function App() {
           {activePanel === "routes" && (
             <div>
               <h3 style={{ margin: "0 0 12px", color: "#fff", fontSize: 16, fontWeight: 700 }}>Route Presets</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8 }}>
-                {ROUTE_PRESETS.map((r) => (
-                  <button key={r.name} onClick={() => loadRoute(r)} style={{
-                    padding: "12px", background: "#2a2a35", border: "1px solid #444",
-                    borderRadius: 10, cursor: "pointer", touchAction: "manipulation",
-                    textAlign: "left", color: "#fff",
-                  }}>
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{r.name}</div>
-                    <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
-                      {r.grade} &middot; {r.wallAngle > 0 ? `${r.wallAngle}\u00b0 OH` : r.wallAngle < 0 ? "Slab" : "Vert"}
-                      &middot; {r.holds.length} holds
-                    </div>
-                  </button>
-                ))}
+              <div style={{ maxHeight: 260, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8, paddingRight: 4 }}>
+                  {ROUTE_PRESETS.map((r) => (
+                    <button key={r.name} onClick={() => loadRoute(r)} style={{
+                      padding: "12px", background: "#2a2a35", border: "1px solid #444",
+                      borderRadius: 10, cursor: "pointer", touchAction: "manipulation",
+                      textAlign: "left", color: "#fff",
+                    }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{r.name}</div>
+                      <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
+                        {r.grade} &middot; {r.segments
+                          ? `${r.segments.length} seg`
+                          : r.wallAngle > 0 ? `${r.wallAngle}° OH` : r.wallAngle < 0 ? "Slab" : "Vert"}
+                        &middot; {r.holds.length} holds
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -1104,10 +1381,47 @@ function App() {
                 <Slider label="Ape Index" value={state.apeIndexIn} min={54} max={84} step={0.5} onChange={(v) => set("apeIndexIn", v)} suffix='"' />
               </div>
 
+              {/* Wall Segments */}
+              <div style={{ color: "#888", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>Wall Segments</div>
+              <div style={{ background: "#1a1a22", borderRadius: 10, padding: 12, marginBottom: 10 }}>
+                {wallSegments.map((seg, i) => (
+                  <div key={i} style={{ marginBottom: 8, padding: 8, background: "#222233", borderRadius: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, color: "#aaa", fontWeight: 600 }}>Segment {i + 1}</span>
+                      {wallSegments.length > 1 && (
+                        <button onClick={() => {
+                          setWallSegments(prev => prev.filter((_, j) => j !== i));
+                        }} style={{ background: "#553333", color: "#ff6666", border: "none", borderRadius: 6, padding: "2px 8px", fontSize: 11, cursor: "pointer" }}>✕</button>
+                      )}
+                    </div>
+                    <Slider label="Height" value={seg.height} min={0.5} max={6} step={0.25} onChange={(v) => {
+                      setWallSegments(prev => prev.map((s, j) => j === i ? { ...s, height: v } : s));
+                    }} suffix="m" />
+                    <Slider label="Angle" value={seg.angleDeg} min={-30} max={90} step={1} onChange={(v) => {
+                      setWallSegments(prev => prev.map((s, j) => j === i ? { ...s, angleDeg: v } : s));
+                      // Update climber wallAngleDeg to match where they are
+                      const avgY = (state.lhY + state.rhY) / 2;
+                      const newSegs = wallSegments.map((s, j) => j === i ? { ...s, angleDeg: v } : s);
+                      const angle = angleAtHeight(avgY, newSegs);
+                      setState(prev => ({ ...prev, wallAngleDeg: angle }));
+                    }} suffix="°" />
+                  </div>
+                ))}
+                <button onClick={() => {
+                  const lastAngle = wallSegments[wallSegments.length - 1].angleDeg;
+                  setWallSegments(prev => [...prev, { height: 2, angleDeg: lastAngle }]);
+                }} style={{
+                  width: "100%", padding: "6px", background: "#334455", color: "#88bbff", border: "1px solid #445566",
+                  borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600, marginBottom: 4,
+                }}>+ Add Segment</button>
+                <div style={{ fontSize: 10, color: "#666", textAlign: "center" }}>
+                  Total: {totalWallHeight(wallSegments).toFixed(1)}m
+                </div>
+              </div>
+
               {/* Body position */}
               <div style={{ color: "#888", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>Body Position</div>
               <div style={{ background: "#1a1a22", borderRadius: 10, padding: 12, marginBottom: 10 }}>
-                <Slider label="Wall" value={state.wallAngleDeg} min={-30} max={90} step={1} onChange={(v) => set("wallAngleDeg", v)} suffix="\u00b0" />
                 <Slider label="Twist" value={state.bodyRotationDeg} min={-90} max={90} step={1} onChange={(v) => set("bodyRotationDeg", v)} suffix="\u00b0" />
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
                   {Object.keys(TWIST_PRESETS).map((name) => (
