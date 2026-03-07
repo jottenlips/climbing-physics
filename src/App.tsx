@@ -1,6 +1,6 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import ClimbingScene from "./components/ClimbingScene";
-import { RagdollPart } from "./components/ClimbingScene";
+import { RagdollPart, explorerKeys } from "./components/ClimbingScene";
 import ForcePanel from "./components/ForcePanel";
 import { ClimberConfig, PullDirection, computeForces } from "./physics/climbingPhysics";
 import { PlacedHold, HoldType, HoldDirection, HoldUsage, HOLD_INFO, holdToPullHand, holdToPullFoot, planRoute, ClimbMove, makeHoldId, StartHolds } from "./holds/holdTypes";
@@ -459,6 +459,86 @@ function Slider({ label, value, min, max, step, onChange, suffix }: {
   );
 }
 
+// --- Virtual joystick for mobile explore mode ---
+function VirtualJoystick() {
+  const outerRef = useRef<HTMLDivElement>(null);
+  const knobRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef(false);
+  const RADIUS = 50;
+
+  const update = useCallback((clientX: number, clientY: number) => {
+    if (!outerRef.current) return;
+    const rect = outerRef.current.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    let dx = clientX - cx;
+    let dy = clientY - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > RADIUS) { dx = dx / dist * RADIUS; dy = dy / dist * RADIUS; }
+    if (knobRef.current) {
+      knobRef.current.style.transform = `translate(${dx}px, ${dy}px)`;
+    }
+    // Map to keys: up/down = forward/back, left/right = turn
+    const normX = dx / RADIUS; // -1 to 1
+    const normY = dy / RADIUS; // -1 to 1
+    // Forward/back (Y axis, inverted: up = forward)
+    if (normY < -0.3) explorerKeys.add("arrowup"); else explorerKeys.delete("arrowup");
+    if (normY > 0.3) explorerKeys.add("arrowdown"); else explorerKeys.delete("arrowdown");
+    // Turn left/right
+    if (normX < -0.3) explorerKeys.add("arrowleft"); else explorerKeys.delete("arrowleft");
+    if (normX > 0.3) explorerKeys.add("arrowright"); else explorerKeys.delete("arrowright");
+  }, []);
+
+  const reset = useCallback(() => {
+    activeRef.current = false;
+    if (knobRef.current) knobRef.current.style.transform = "translate(0px, 0px)";
+    explorerKeys.delete("arrowup");
+    explorerKeys.delete("arrowdown");
+    explorerKeys.delete("arrowleft");
+    explorerKeys.delete("arrowright");
+  }, []);
+
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    activeRef.current = true;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    update(e.clientX, e.clientY);
+  }, [update]);
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!activeRef.current) return;
+    update(e.clientX, e.clientY);
+  }, [update]);
+
+  return (
+    <div
+      ref={outerRef}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={reset}
+      onPointerCancel={reset}
+      style={{
+        position: "absolute", bottom: 130, left: 30, zIndex: 30,
+        width: RADIUS * 2 + 20, height: RADIUS * 2 + 20,
+        borderRadius: "50%", background: "rgba(255,255,255,0.12)",
+        border: "2px solid rgba(255,255,255,0.25)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        touchAction: "none", userSelect: "none",
+        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+      }}
+    >
+      <div
+        ref={knobRef}
+        style={{
+          width: 44, height: 44, borderRadius: "50%",
+          background: "rgba(255,255,255,0.45)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+          pointerEvents: "none",
+        }}
+      />
+    </div>
+  );
+}
+
 const DEFAULT_STATE: ClimberState = {
   bodyWeightKg: 70, gripStrengthKg: 45, heightFt: 5.75, apeIndexIn: 69,
   bodyRotationDeg: 0, wallAngleDeg: 45,
@@ -579,6 +659,9 @@ function App() {
     leftHand: { id: "start_lh", x: state.lhX, y: state.lhY, type: selectedHoldType, direction: selectedDirection, usage: "hand" },
     rightHand: { id: "start_rh", x: state.rhX, y: state.rhY, type: selectedHoldType, direction: selectedDirection, usage: "hand" },
   }), [state.lhX, state.lhY, state.rhX, state.rhY, selectedHoldType, selectedDirection]);
+
+  // Explore mode
+  const [isExploring, setIsExploring] = useState(false);
 
   // Simulation
   const [isPlaying, setIsPlaying] = useState(false);
@@ -1077,6 +1160,7 @@ function App() {
     minHeight: 40,
   };
 
+
   return (
     <div style={{ width: "100vw", height: "100vh", position: "relative", overflow: "hidden", fontFamily: "system-ui, -apple-system, sans-serif" }}>
 
@@ -1084,7 +1168,43 @@ function App() {
       <ClimbingScene config={config} placedHolds={allHoldsOnWall} wallSegments={wallSegments}
         onWallClick={handleWallClick} onHoldClick={handleHoldClick}
         placingMode={placingMode} eraserMode={eraserMode}
-        ragdollParts={ragdollParts} sittingOnGround={sittingOnGround} toppedOut={toppedOut} />
+        ragdollParts={ragdollParts} sittingOnGround={sittingOnGround} toppedOut={toppedOut}
+        isExploring={isExploring} />
+
+      {/* === EXPLORE MODE HINT === */}
+      {isExploring && (
+        <div style={{
+          position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)",
+          zIndex: 20, background: "rgba(0,0,0,0.75)", color: "#88ccff", padding: "8px 16px",
+          borderRadius: 10, fontSize: 13, fontWeight: 600,
+          backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+        }}>
+          WASD / Arrow keys to walk around
+        </div>
+      )}
+
+      {/* === MOBILE JOYSTICK + PET DOG BUTTON === */}
+      {isExploring && (
+        <>
+          <VirtualJoystick />
+          <button
+            onPointerDown={() => explorerKeys.add("p")}
+            onPointerUp={() => explorerKeys.delete("p")}
+            onPointerCancel={() => explorerKeys.delete("p")}
+            onPointerLeave={() => explorerKeys.delete("p")}
+            style={{
+              position: "absolute", bottom: 140, right: 30, zIndex: 30,
+              width: 60, height: 60, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.25)",
+              background: "rgba(255,255,255,0.12)", color: "#fff", fontSize: 22,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              cursor: "pointer", touchAction: "none", userSelect: "none",
+              backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+            }}
+          >
+            &#128054;
+          </button>
+        </>
+      )}
 
       {/* === SITTING MESSAGE === */}
       {sittingOnGround && !isPlaying && (
@@ -1249,6 +1369,10 @@ function App() {
               <button onClick={startSim}
                 style={{ ...pill, background: "#2266cc", flex: 1, maxWidth: 140 }}>
                 &#9654; Play
+              </button>
+              <button onClick={() => setIsExploring(e => !e)}
+                style={{ ...pill, background: isExploring ? "#44aa44" : "#333", flex: 1, maxWidth: 140 }}>
+                {isExploring ? "Back" : "Explore"}
               </button>
               <button onClick={() => togglePanel("settings")}
                 style={{ ...pill, background: activePanel === "settings" ? "#4488ff" : "#333", width: 44, fontSize: 18 }}>
