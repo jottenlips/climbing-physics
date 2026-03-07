@@ -3175,7 +3175,7 @@ function Deer({
   );
 }
 
-function Tent() {
+function Tent({ color = "#c45c2c", scale = 1 }: { color?: string; scale?: number }) {
   const tentGeo = useMemo(() => {
     // Triangular prism: ridge at top, base width 1.6, length 2.0, height 1.1
     const w = 0.8,
@@ -3281,7 +3281,7 @@ function Tent() {
   }, []);
 
   return (
-    <group position={[5, 0, -6]} rotation={[0, -0.4, 0]}>
+    <group scale={[scale, scale, scale]}>
       {/* Left slope */}
       <mesh>
         <bufferGeometry>
@@ -3293,7 +3293,7 @@ function Tent() {
           />
         </bufferGeometry>
         <meshStandardMaterial
-          color="#c45c2c"
+          color={color}
           roughness={0.85}
           side={THREE.DoubleSide}
           flatShading
@@ -3310,7 +3310,7 @@ function Tent() {
           />
         </bufferGeometry>
         <meshStandardMaterial
-          color="#b84e22"
+          color={color}
           roughness={0.85}
           side={THREE.DoubleSide}
           flatShading
@@ -3327,7 +3327,7 @@ function Tent() {
           />
         </bufferGeometry>
         <meshStandardMaterial
-          color="#a84520"
+          color={color}
           roughness={0.85}
           side={THREE.DoubleSide}
           flatShading
@@ -3344,7 +3344,7 @@ function Tent() {
           />
         </bufferGeometry>
         <meshStandardMaterial
-          color="#d4663a"
+          color={color}
           roughness={0.85}
           side={THREE.DoubleSide}
           flatShading
@@ -3366,7 +3366,7 @@ function Tent() {
           />
         </bufferGeometry>
         <meshStandardMaterial
-          color="#993d18"
+          color={color}
           roughness={0.95}
           side={THREE.DoubleSide}
         />
@@ -3693,7 +3693,7 @@ function ClimbingShop() {
         <meshStandardMaterial color="#7a5c3a" roughness={0.9} />
       </mesh>
       {/* Roof */}
-      <mesh position={[0, 2.8, 0]} rotation={[0, 0, 0]}>
+      <mesh position={[0, 3.1, 0]} rotation={[0, 0, 0]}>
         <coneGeometry args={[3.2, 1.4, 4]} />
         <meshStandardMaterial color="#4a3020" roughness={0.95} />
       </mesh>
@@ -3716,20 +3716,20 @@ function ClimbingShop() {
         <boxGeometry args={[0.6, 0.5, 0.05]} />
         <meshStandardMaterial color="#88bbdd" roughness={0.3} metalness={0.1} />
       </mesh>
-      {/* Sign: "CLIMBING SHOP" */}
-      <mesh position={[0, 2.3, 1.78]}>
-        <boxGeometry args={[2.4, 0.4, 0.05]} />
+      {/* Sign: "CLIMBING SHOP" — mounted on front of porch */}
+      <mesh position={[0, 2.35, 2.9]}>
+        <boxGeometry args={[3.2, 0.5, 0.06]} />
         <meshStandardMaterial color="#2a1a08" roughness={0.9} />
       </mesh>
       <Text
-        position={[0, 2.3, 1.82]}
-        fontSize={0.18}
+        position={[0, 2.35, 2.94]}
+        fontSize={0.25}
         color="#e8d090"
         anchorX="center"
         anchorY="middle"
         font={undefined}
       >
-        SEND IT CLIMBING SHOP
+        FROGGY CLIMBING SHOP
       </Text>
       {/* Porch overhang */}
       <mesh position={[0, 2.0, 2.3]}>
@@ -3862,144 +3862,161 @@ function ClimbingShop() {
       {/* === TENTS === */}
       {/* Tent 1 - orange */}
       <group position={[-3, 0, 6]} rotation={[0, 0.5, 0]}>
-        <mesh position={[0, 0.5, 0]} rotation={[0, 0, Math.PI / 4]}>
-          <boxGeometry args={[1.2, 1.2, 1.6]} />
-          <meshStandardMaterial
-            color="#dd6622"
-            roughness={0.85}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
+        <Tent color="#dd6622" scale={0.75} />
       </group>
       {/* Tent 2 - green */}
       <group position={[6, 0, 7]} rotation={[0, -0.3, 0]}>
-        <mesh position={[0, 0.5, 0]} rotation={[0, 0, Math.PI / 4]}>
-          <boxGeometry args={[1.0, 1.0, 1.4]} />
-          <meshStandardMaterial
-            color="#338844"
-            roughness={0.85}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
+        <Tent color="#338844" scale={0.65} />
       </group>
       {/* Tent 3 - blue */}
       <group position={[-1, 0, 8]} rotation={[0, 0.8, 0]}>
-        <mesh position={[0, 0.5, 0]} rotation={[0, 0, Math.PI / 4]}>
-          <boxGeometry args={[1.1, 1.1, 1.5]} />
-          <meshStandardMaterial
-            color="#3366aa"
-            roughness={0.85}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
+        <Tent color="#3366aa" scale={0.7} />
       </group>
 
       {/* === CLIMBER FIGURES === */}
-      {/* Standing climbers around the fire */}
+      {/* Sitting climbers on logs around fire (fire is at [3,0,5], logs at radius 1.5) */}
       {[
-        { x: 2, z: 3.8, rot: 2.5, shirt: "#cc3333", pants: "#334455" },
-        { x: 4.2, z: 4.5, rot: 3.8, shirt: "#3388cc", pants: "#333" },
-        { x: 3.8, z: 6.2, rot: 1.2, shirt: "#44aa55", pants: "#445" },
-        { x: 1.8, z: 5.8, rot: 0.5, shirt: "#ddaa33", pants: "#444" },
-      ].map((c, i) => (
-        <group key={i} position={[c.x, 0, c.z]} rotation={[0, c.rot, 0]}>
-          {/* Legs */}
-          <mesh position={[-0.04, 0.22, 0]}>
-            <cylinderGeometry args={[0.025, 0.022, 0.44, 8]} />
-            <meshStandardMaterial color={c.pants} roughness={0.7} />
-          </mesh>
-          <mesh position={[0.04, 0.22, 0]}>
-            <cylinderGeometry args={[0.025, 0.022, 0.44, 8]} />
-            <meshStandardMaterial color={c.pants} roughness={0.7} />
-          </mesh>
-          {/* Torso */}
-          <mesh position={[0, 0.57, 0]}>
-            <cylinderGeometry args={[0.07, 0.08, 0.26, 10]} />
-            <meshStandardMaterial color={c.shirt} roughness={0.7} />
-          </mesh>
-          {/* Head */}
-          <mesh position={[0, 0.77, 0]}>
-            <sphereGeometry args={[0.06, 10, 10]} />
-            <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
-          </mesh>
-          {/* Beanie */}
-          <mesh position={[0, 0.81, 0]}>
-            <sphereGeometry
-              args={[0.062, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]}
-            />
-            <meshStandardMaterial
-              color={["#1a1a1a", "#cc4422", "#225588", "#333"][i]}
-              roughness={0.9}
-            />
-          </mesh>
-          {/* Arms */}
-          <mesh position={[-0.1, 0.5, 0.03]} rotation={[0.3, 0, 0.15]}>
-            <cylinderGeometry args={[0.018, 0.015, 0.24, 8]} />
-            <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
-          </mesh>
-          <mesh position={[0.1, 0.5, 0.03]} rotation={[0.3, 0, -0.15]}>
-            <cylinderGeometry args={[0.018, 0.015, 0.24, 8]} />
-            <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
-          </mesh>
-          {/* Shoes */}
-          <mesh position={[-0.04, 0.01, 0.02]}>
-            <boxGeometry args={[0.035, 0.02, 0.07]} />
-            <meshStandardMaterial color="#333" roughness={0.8} />
-          </mesh>
-          <mesh position={[0.04, 0.01, 0.02]}>
-            <boxGeometry args={[0.035, 0.02, 0.07]} />
-            <meshStandardMaterial color="#333" roughness={0.8} />
-          </mesh>
-        </group>
-      ))}
-
-      {/* Sitting climbers on logs */}
-      {[
-        { x: 3.5, z: 3.5, rot: 3.5, shirt: "#aa3377", pants: "#334" },
-        { x: 1.5, z: 5.0, rot: 0.8, shirt: "#5577cc", pants: "#343" },
-      ].map((c, i) => (
-        <group
-          key={`sit${i}`}
-          position={[c.x, 0.3, c.z]}
-          rotation={[0, c.rot, 0]}
-        >
-          {/* Torso leaning back slightly */}
-          <mesh position={[0, 0.2, 0]} rotation={[-0.15, 0, 0]}>
-            <cylinderGeometry args={[0.065, 0.075, 0.24, 10]} />
-            <meshStandardMaterial color={c.shirt} roughness={0.7} />
-          </mesh>
-          {/* Head */}
-          <mesh position={[0, 0.38, -0.02]}>
-            <sphereGeometry args={[0.055, 10, 10]} />
-            <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
-          </mesh>
-          {/* Beanie */}
-          <mesh position={[0, 0.42, -0.02]}>
-            <sphereGeometry
-              args={[0.058, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]}
-            />
-            <meshStandardMaterial
-              color={["#992266", "#226699"][i]}
-              roughness={0.9}
-            />
-          </mesh>
-          {/* Thighs out front */}
-          <mesh
-            position={[-0.04, 0.04, 0.1]}
-            rotation={[Math.PI / 2.5, 0, 0.1]}
-          >
-            <cylinderGeometry args={[0.025, 0.022, 0.2, 8]} />
-            <meshStandardMaterial color={c.pants} roughness={0.7} />
-          </mesh>
-          <mesh
-            position={[0.04, 0.04, 0.1]}
-            rotation={[Math.PI / 2.5, 0, -0.1]}
-          >
-            <cylinderGeometry args={[0.025, 0.022, 0.2, 8]} />
-            <meshStandardMaterial color={c.pants} roughness={0.7} />
-          </mesh>
-        </group>
-      ))}
+        { angle: 0, shirt: "#cc3333", pants: "#334455", beanie: "#1a1a1a", beer: true },
+        { angle: 1.2, shirt: "#3388cc", pants: "#333", beanie: "#cc4422", beer: false },
+        { angle: 2.4, shirt: "#44aa55", pants: "#445", beanie: "#225588", beer: true },
+        { angle: 3.6, shirt: "#ddaa33", pants: "#444", beanie: "#333", beer: false },
+        { angle: 4.8, shirt: "#aa3377", pants: "#334", beanie: "#992266", beer: true },
+      ].map((c, i) => {
+        const logX = 3 + Math.cos(c.angle) * 1.5;
+        const logZ = 5 + Math.sin(c.angle) * 1.5;
+        // Face the fire
+        const faceRot = Math.atan2(3 - logX, 5 - logZ);
+        return (
+          <group key={`sit${i}`} position={[logX, 0.3, logZ]} rotation={[0, faceRot, 0]}>
+            {/* Torso leaning back slightly */}
+            <mesh position={[0, 0.2, 0]} rotation={[-0.15, 0, 0]}>
+              <cylinderGeometry args={[0.065, 0.075, 0.24, 10]} />
+              <meshStandardMaterial color={c.shirt} roughness={0.7} />
+            </mesh>
+            {/* Head */}
+            <mesh position={[0, 0.38, -0.02]}>
+              <sphereGeometry args={[0.055, 10, 10]} />
+              <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
+            </mesh>
+            {/* Beanie */}
+            <mesh position={[0, 0.42, -0.02]}>
+              <sphereGeometry args={[0.058, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+              <meshStandardMaterial color={c.beanie} roughness={0.9} />
+            </mesh>
+            {/* Thighs out front */}
+            <mesh position={[-0.04, 0.04, 0.1]} rotation={[Math.PI / 2.5, 0, 0.1]}>
+              <cylinderGeometry args={[0.025, 0.022, 0.2, 8]} />
+              <meshStandardMaterial color={c.pants} roughness={0.7} />
+            </mesh>
+            <mesh position={[0.04, 0.04, 0.1]} rotation={[Math.PI / 2.5, 0, -0.1]}>
+              <cylinderGeometry args={[0.025, 0.022, 0.2, 8]} />
+              <meshStandardMaterial color={c.pants} roughness={0.7} />
+            </mesh>
+            {/* Shins hanging down */}
+            <mesh position={[-0.04, -0.08, 0.2]} rotation={[0.3, 0, 0]}>
+              <cylinderGeometry args={[0.02, 0.018, 0.18, 8]} />
+              <meshStandardMaterial color={c.pants} roughness={0.7} />
+            </mesh>
+            <mesh position={[0.04, -0.08, 0.2]} rotation={[0.3, 0, 0]}>
+              <cylinderGeometry args={[0.02, 0.018, 0.18, 8]} />
+              <meshStandardMaterial color={c.pants} roughness={0.7} />
+            </mesh>
+            {/* Arms */}
+            <mesh position={[-0.1, 0.15, 0.04]} rotation={[0.4, 0, 0.2]}>
+              <cylinderGeometry args={[0.018, 0.015, 0.2, 8]} />
+              <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
+            </mesh>
+            {c.beer ? (
+              <>
+                {/* Arm holding beer */}
+                <mesh position={[0.1, 0.15, 0.06]} rotation={[0.6, 0, -0.2]}>
+                  <cylinderGeometry args={[0.018, 0.015, 0.2, 8]} />
+                  <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
+                </mesh>
+                {/* Beer can */}
+                <mesh position={[0.12, 0.08, 0.16]}>
+                  <cylinderGeometry args={[0.02, 0.02, 0.07, 8]} />
+                  <meshStandardMaterial color="#ccaa22" roughness={0.4} metalness={0.3} />
+                </mesh>
+                {/* Beer label */}
+                <mesh position={[0.12, 0.08, 0.16]}>
+                  <cylinderGeometry args={[0.021, 0.021, 0.04, 8]} />
+                  <meshStandardMaterial color="#2255aa" roughness={0.5} />
+                </mesh>
+              </>
+            ) : (
+              <mesh position={[0.1, 0.15, 0.04]} rotation={[0.4, 0, -0.2]}>
+                <cylinderGeometry args={[0.018, 0.015, 0.2, 8]} />
+                <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
+              </mesh>
+            )}
+            {/* Shoes */}
+            <mesh position={[-0.04, -0.16, 0.24]}>
+              <boxGeometry args={[0.035, 0.02, 0.06]} />
+              <meshStandardMaterial color="#333" roughness={0.8} />
+            </mesh>
+            <mesh position={[0.04, -0.16, 0.24]}>
+              <boxGeometry args={[0.035, 0.02, 0.06]} />
+              <meshStandardMaterial color="#333" roughness={0.8} />
+            </mesh>
+          </group>
+        );
+      })}
+      {/* One standing climber by the shop porch, holding a beer */}
+      <group position={[0.5, 0, 2.5]} rotation={[0, 2.2, 0]}>
+        {/* Legs */}
+        <mesh position={[-0.04, 0.22, 0]}>
+          <cylinderGeometry args={[0.025, 0.022, 0.44, 8]} />
+          <meshStandardMaterial color="#445" roughness={0.7} />
+        </mesh>
+        <mesh position={[0.04, 0.22, 0]}>
+          <cylinderGeometry args={[0.025, 0.022, 0.44, 8]} />
+          <meshStandardMaterial color="#445" roughness={0.7} />
+        </mesh>
+        {/* Torso */}
+        <mesh position={[0, 0.57, 0]}>
+          <cylinderGeometry args={[0.07, 0.08, 0.26, 10]} />
+          <meshStandardMaterial color="#5577cc" roughness={0.7} />
+        </mesh>
+        {/* Head */}
+        <mesh position={[0, 0.77, 0]}>
+          <sphereGeometry args={[0.06, 10, 10]} />
+          <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
+        </mesh>
+        {/* Beanie */}
+        <mesh position={[0, 0.81, 0]}>
+          <sphereGeometry args={[0.062, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+          <meshStandardMaterial color="#226699" roughness={0.9} />
+        </mesh>
+        {/* Left arm relaxed */}
+        <mesh position={[-0.1, 0.5, 0.03]} rotation={[0.2, 0, 0.15]}>
+          <cylinderGeometry args={[0.018, 0.015, 0.24, 8]} />
+          <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
+        </mesh>
+        {/* Right arm holding beer */}
+        <mesh position={[0.1, 0.48, 0.06]} rotation={[0.5, 0, -0.2]}>
+          <cylinderGeometry args={[0.018, 0.015, 0.24, 8]} />
+          <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
+        </mesh>
+        {/* Beer can */}
+        <mesh position={[0.12, 0.38, 0.14]}>
+          <cylinderGeometry args={[0.02, 0.02, 0.07, 8]} />
+          <meshStandardMaterial color="#ccaa22" roughness={0.4} metalness={0.3} />
+        </mesh>
+        <mesh position={[0.12, 0.38, 0.14]}>
+          <cylinderGeometry args={[0.021, 0.021, 0.04, 8]} />
+          <meshStandardMaterial color="#cc3333" roughness={0.5} />
+        </mesh>
+        {/* Shoes */}
+        <mesh position={[-0.04, 0.01, 0.02]}>
+          <boxGeometry args={[0.035, 0.02, 0.07]} />
+          <meshStandardMaterial color="#333" roughness={0.8} />
+        </mesh>
+        <mesh position={[0.04, 0.01, 0.02]}>
+          <boxGeometry args={[0.035, 0.02, 0.07]} />
+          <meshStandardMaterial color="#333" roughness={0.8} />
+        </mesh>
+      </group>
 
       {/* Crash pads leaning against shop */}
       <mesh position={[-2.1, 0.4, 1.5]} rotation={[0, 0, 0.15]}>
@@ -4047,14 +4064,14 @@ function ClimbingShop() {
 }
 
 // Shared explorer position for camera and dog to read
-const explorerPos = { x: 0, z: 3, facing: 0 };
+export const explorerPos = { x: 0, z: 3, facing: 0 };
 
 // Shared key set — both keyboard and mobile touch controls write here
 export const explorerKeys = new Set<string>();
 
 // === EXPLORING CLIMBER ===
 // Walking climber with backpack, controlled by arrow keys / WASD
-function ExploringClimber({ scale }: { scale: number }) {
+function ExploringClimber({ scale, onOutOfBounds }: { scale: number; onOutOfBounds?: () => void }) {
   const s = scale;
   const groupRef = useRef<THREE.Group>(null);
   const posRef = useRef({ x: 0, z: 3 });
@@ -4107,8 +4124,19 @@ function ExploringClimber({ scale }: { scale: number }) {
       const dz = Math.cos(facingRef.current) * forward;
       posRef.current.x += dx * moveSpeed * delta;
       posRef.current.z += dz * moveSpeed * delta;
-      posRef.current.x = Math.max(-55, Math.min(30, posRef.current.x));
-      posRef.current.z = Math.max(-15, Math.min(25, posRef.current.z));
+
+      // Out of bounds detection — mountains (z<-16), past shop (x<-55), edges
+      const oob =
+        posRef.current.x < -55 || posRef.current.x > 35 ||
+        posRef.current.z > 25 || posRef.current.z < -16;
+      if (oob && onOutOfBounds) {
+        // Reset position to safe spot
+        posRef.current.x = 0;
+        posRef.current.z = 3;
+        onOutOfBounds();
+        return;
+      }
+
       walkPhaseRef.current += delta * 8;
     }
 
@@ -4327,6 +4355,23 @@ function ExploringClimber({ scale }: { scale: number }) {
   );
 }
 
+// Camera that watches ragdoll from a fixed position
+function RagdollCamera({ target }: { target: [number, number, number] }) {
+  const camPosRef = useRef<THREE.Vector3 | null>(null);
+  useFrame((state) => {
+    if (!camPosRef.current) {
+      // Set initial camera position: offset from ragdoll target
+      camPosRef.current = new THREE.Vector3(
+        target[0] + 3, target[1] + 3, target[2] + 4
+      );
+    }
+    const lookAt = new THREE.Vector3(target[0], 0.5, target[2]);
+    state.camera.position.lerp(camPosRef.current, 0.05);
+    state.camera.lookAt(lookAt);
+  });
+  return null;
+}
+
 // Camera follower for explore mode
 function ExploreCamera() {
   useFrame((state) => {
@@ -4361,6 +4406,8 @@ export default function ClimbingScene({
   sittingOnGround = false,
   toppedOut = false,
   isExploring = false,
+  onOutOfBounds,
+  ragdollCameraTarget,
 }: {
   config: ClimberConfig;
   placedHolds?: PlacedHold[];
@@ -4373,6 +4420,8 @@ export default function ClimbingScene({
   sittingOnGround?: boolean;
   toppedOut?: boolean;
   isExploring?: boolean;
+  onOutOfBounds?: () => void;
+  ragdollCameraTarget?: [number, number, number];
 }) {
   const forces = useMemo(() => computeForces(config), [config]);
   return (
@@ -4413,7 +4462,9 @@ export default function ClimbingScene({
         <River />
         <DeerHerd />
         <Rocks />
-        <Tent />
+        <group position={[5, 0, -6]} rotation={[0, -0.4, 0]}>
+          <Tent />
+        </group>
         <Campfire />
         <CragDog isExploring={isExploring} />
         <ClimbingShop />
@@ -4430,7 +4481,7 @@ export default function ClimbingScene({
           eraserMode={eraserMode}
         />
         {isExploring ? (
-          <ExploringClimber scale={config.heightFt / 5.75} />
+          <ExploringClimber scale={config.heightFt / 5.75} onOutOfBounds={onOutOfBounds} />
         ) : ragdollParts ? (
           <RagdollClimber parts={ragdollParts} />
         ) : sittingOnGround ? (
@@ -4446,6 +4497,8 @@ export default function ClimbingScene({
         )}
         {isExploring ? (
           <ExploreCamera />
+        ) : ragdollCameraTarget ? (
+          <RagdollCamera target={ragdollCameraTarget} />
         ) : (
           <OrbitControls
             makeDefault
