@@ -1912,6 +1912,53 @@ function Tent() {
   );
 }
 
+function Rocks() {
+  const rocks = useMemo(() => {
+    const rng = (seed: number) => {
+      let s = seed;
+      return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+    };
+    const rand = rng(77);
+    const result: { pos: V3; scale: V3; rot: V3; color: string }[] = [];
+
+    // Big background boulders
+    const boulderSpots: [number, number][] = [[-8, -5], [-5, -7], [7, -6], [10, -4], [-12, -6], [14, -8], [-3, -9]];
+    for (const [bx, bz] of boulderSpots) {
+      const sz = 0.6 + rand() * 1.0;
+      result.push({
+        pos: [bx + rand() * 0.5, sz * 0.4, bz + rand() * 0.5],
+        scale: [sz * (0.8 + rand() * 0.5), sz * (0.6 + rand() * 0.4), sz * (0.7 + rand() * 0.5)],
+        rot: [rand() * 0.3, rand() * Math.PI, rand() * 0.2],
+        color: `hsl(${20 + rand() * 20}, ${5 + rand() * 8}%, ${25 + rand() * 15}%)`,
+      });
+    }
+
+    // Small rocks near the wall base
+    for (let i = 0; i < 12; i++) {
+      const sz = 0.05 + rand() * 0.12;
+      result.push({
+        pos: [(rand() - 0.5) * 3, sz * 0.4, 0.3 + rand() * 1.5],
+        scale: [sz * (0.8 + rand() * 0.6), sz * (0.6 + rand() * 0.4), sz * (0.7 + rand() * 0.5)],
+        rot: [rand() * 0.5, rand() * Math.PI * 2, rand() * 0.3],
+        color: `hsl(${25 + rand() * 15}, ${4 + rand() * 6}%, ${30 + rand() * 18}%)`,
+      });
+    }
+
+    return result;
+  }, []);
+
+  return (
+    <group>
+      {rocks.map((r, i) => (
+        <mesh key={i} position={r.pos} rotation={r.rot} scale={r.scale}>
+          <dodecahedronGeometry args={[1, 0]} />
+          <meshStandardMaterial color={r.color} roughness={0.95} flatShading />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 function Campfire() {
   const flameRef = useRef<THREE.Group>(null);
   const sparkRef = useRef<THREE.InstancedMesh>(null);
@@ -2096,6 +2143,7 @@ export default function ClimbingScene({
         <Mountains />
         <River />
         <DeerHerd />
+        <Rocks />
         <Tent />
         <Campfire />
         <CragDog />
