@@ -394,6 +394,30 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
   const wallUp: V3 = [0, Math.cos(angleRad), Math.sin(angleRad)];
   const wallNorm: V3 = [0, -Math.sin(angleRad), Math.cos(angleRad)];
 
+  // Get wall basis vectors at a specific height along the wall (segment-aware)
+  const wallBasisAtHeight = (h: number): { up: V3; norm: V3 } => {
+    if (!segments || segments.length <= 1) {
+      return { up: wallUp, norm: wallNorm };
+    }
+    let remaining = h;
+    for (const seg of segments) {
+      if (remaining <= seg.height) {
+        const ar = (seg.angleDeg * Math.PI) / 180;
+        return {
+          up: [0, Math.cos(ar), Math.sin(ar)],
+          norm: [0, -Math.sin(ar), Math.cos(ar)],
+        };
+      }
+      remaining -= seg.height;
+    }
+    const last = segments[segments.length - 1];
+    const ar = (last.angleDeg * Math.PI) / 180;
+    return {
+      up: [0, Math.cos(ar), Math.sin(ar)],
+      norm: [0, -Math.sin(ar), Math.cos(ar)],
+    };
+  };
+
   // Place a point on the wall surface (x=lateral, h=height along wall, d=offset along normal)
   const toWorld = (x: number, h: number, d: number): V3 => {
     if (!segments || segments.length <= 1) {
@@ -515,7 +539,8 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
   // Compute elbow bend direction: anatomically, elbows are hinge joints
   // that primarily point DOWN and slightly OUT (away from body midline).
   // On steep terrain, elbows also push away from the wall.
-  const computeElbowBend = (shoulder: V3, wrist: V3, lateralSign: number): V3 => {
+  const computeElbowBend = (shoulder: V3, wrist: V3, lateralSign: number, limbHeight: number): V3 => {
+    const { norm: limbNorm } = wallBasisAtHeight(limbHeight);
     // Desired direction: blend of down + lateral splay + away from wall
     const down: V3 = [0, -1, 0];
     const lateral: V3 = [lateralSign, 0, 0];
@@ -523,7 +548,7 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
     // Weight gravity most, then lateral splay, then wall-normal
     let desired: V3 = v3normalize(v3add(
       v3add(v3scale(down, 1.0), v3scale(lateral, 0.5)),
-      v3scale(wallNorm, 0.3)
+      v3scale(limbNorm, 0.3)
     ));
 
     // The IK solver removes the component along the limb axis,
@@ -532,7 +557,7 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
     const alongLimb = Math.abs(v3dot(desired, forward));
     if (alongLimb > 0.95) {
       // Desired is nearly parallel to arm — use wall normal + lateral as fallback
-      desired = v3normalize(v3add(v3scale(wallNorm, 0.7), v3scale(lateral, 0.3)));
+      desired = v3normalize(v3add(v3scale(limbNorm, 0.7), v3scale(lateral, 0.3)));
     }
 
     return desired;
@@ -541,7 +566,8 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
   // Derive wrist/ankle from clamped targets.
   // Wrist is handLen back along the direction from shoulder to clamped hand.
   // Ankle is footHeight back along the direction from hip to clamped foot.
-  const wristFromClamped = (shoulder: V3, hand: V3): V3 => {
+  const wristFromClamped = (shoulder: V3, hand: V3, limbHeight: number): V3 => {
+    const { norm: limbNorm } = wallBasisAtHeight(limbHeight);
     const toHand = v3sub(hand, shoulder);
     const dist = v3len(toHand);
     if (dist < 0.001) return hand;
@@ -550,10 +576,11 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
     const wristDist = Math.max(0, dist - handLen);
     const wristOnLine = v3add(shoulder, v3scale(dir, wristDist));
     // Add a small normal offset so wrist isn't flat on wall
-    return v3add(wristOnLine, v3scale(wallNorm, chestNormalOff * 0.3));
+    return v3add(wristOnLine, v3scale(limbNorm, chestNormalOff * 0.3));
   };
 
-  const ankleFromClamped = (hip: V3, foot: V3): V3 => {
+  const ankleFromClamped = (hip: V3, foot: V3, limbHeight: number): V3 => {
+    const { norm: limbNorm } = wallBasisAtHeight(limbHeight);
     const toFoot = v3sub(foot, hip);
     const dist = v3len(toFoot);
     if (dist < 0.001) return foot;
@@ -561,24 +588,25 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
     // Ankle sits footHeight back from the foot, offset slightly from wall
     const ankleDist = Math.max(0, dist - footHeight);
     const ankleOnLine = v3add(hip, v3scale(dir, ankleDist));
-    return v3add(ankleOnLine, v3scale(wallNorm, hipNormalOff * 0.2));
+    return v3add(ankleOnLine, v3scale(limbNorm, hipNormalOff * 0.2));
   };
 
-  const wristL = wristFromClamped(shoulderL, lhClamped);
-  const wristR = wristFromClamped(shoulderR, rhClamped);
-  const ankleL = ankleFromClamped(hipL, lfClamped);
-  const ankleR = ankleFromClamped(hipR, rfClamped);
+  const wristL = wristFromClamped(shoulderL, lhClamped, config.leftHand.y);
+  const wristR = wristFromClamped(shoulderR, rhClamped, config.rightHand.y);
+  const ankleL = ankleFromClamped(hipL, lfClamped, config.leftFoot.y);
+  const ankleR = ankleFromClamped(hipR, rfClamped, config.rightFoot.y);
 
   // Solve IK with anatomical elbow bend directions
-  const elbowBendL = computeElbowBend(shoulderL, wristL, -1);
-  const elbowBendR = computeElbowBend(shoulderR, wristR, 1);
+  const elbowBendL = computeElbowBend(shoulderL, wristL, -1, config.leftHand.y);
+  const elbowBendR = computeElbowBend(shoulderR, wristR, 1, config.rightHand.y);
   const elbowL = solveIK2Bone(shoulderL, wristL, upperArm, forearm, elbowBendL);
   const elbowR = solveIK2Bone(shoulderR, wristR, upperArm, forearm, elbowBendR);
 
   // Knee bend direction with turn control for drop knees, flags, etc.
   // Adapts to hip-ankle geometry: when legs are bunched (feet high),
   // knees splay more outward. When extended, knees stay forward.
-  const computeKneeBend = (hip: V3, ankle: V3, turnDeg: number, lateralSign: number): V3 => {
+  const computeKneeBend = (hip: V3, ankle: V3, turnDeg: number, lateralSign: number, footHeight_: number): V3 => {
+    const { up: limbUp, norm: limbNorm } = wallBasisAtHeight(footHeight_);
     const hipToAnkle = v3sub(ankle, hip);
     const legDist = v3len(hipToAnkle);
     const maxLeg = thigh + shin;
@@ -587,8 +615,8 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
 
     // How much the foot is below vs at/above hip height (in wall coords)
     // footBelow > 0 when foot is below hip (normal standing)
-    const hipH = v3dot(hip, wallUp);
-    const ankleH = v3dot(ankle, wallUp);
+    const hipH = v3dot(hip, limbUp);
+    const ankleH = v3dot(ankle, limbUp);
     const footBelow = Math.max(0, Math.min(1, (hipH - ankleH) / (maxLeg * 0.5)));
 
     // Base bend direction adapts to leg geometry:
@@ -603,7 +631,7 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
       v3add(
         v3add(
           v3scale([0, 1, 0], upWeight),
-          v3scale(wallNorm, normWeight)
+          v3scale(limbNorm, normWeight)
         ),
         [lateralSign * lateralWeight, 0, 0]
       )
@@ -627,24 +655,25 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
     return baseBend;
   };
 
-  const kneeBendL = computeKneeBend(hipL, ankleL, config.leftKneeTurnDeg, -1);
-  const kneeBendR = computeKneeBend(hipR, ankleR, config.rightKneeTurnDeg, 1);
+  const kneeBendL = computeKneeBend(hipL, ankleL, config.leftKneeTurnDeg, -1, config.leftFoot.y);
+  const kneeBendR = computeKneeBend(hipR, ankleR, config.rightKneeTurnDeg, 1, config.rightFoot.y);
   let kneeL = solveIK2Bone(hipL, ankleL, thigh, shin, kneeBendL);
   let kneeR = solveIK2Bone(hipR, ankleR, thigh, shin, kneeBendR);
 
   // Clamp knees so they never go behind the wall surface.
   // Project knee onto wall normal — if negative (behind wall), push it forward.
-  const clampKneeToWall = (knee: V3): V3 => {
-    const kneeNormalDist = v3dot(knee, wallNorm);
+  const clampKneeToWall = (knee: V3, footH: number): V3 => {
+    const { norm: limbNorm } = wallBasisAtHeight(footH);
+    const kneeNormalDist = v3dot(knee, limbNorm);
     const minDist = 0.02; // small offset to keep knee visually in front
     if (kneeNormalDist < minDist) {
-      // Push knee forward along wallNorm to minDist
-      return v3add(knee, v3scale(wallNorm, minDist - kneeNormalDist));
+      // Push knee forward along wall normal to minDist
+      return v3add(knee, v3scale(limbNorm, minDist - kneeNormalDist));
     }
     return knee;
   };
-  kneeL = clampKneeToWall(kneeL);
-  kneeR = clampKneeToWall(kneeR);
+  kneeL = clampKneeToWall(kneeL, config.leftFoot.y);
+  kneeR = clampKneeToWall(kneeR, config.rightFoot.y);
 
   // Dangling limbs: when a limb is off the wall, it hangs straight down
   // from its joint origin under gravity. Elbow/knee at upper bone length down,
