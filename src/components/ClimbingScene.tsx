@@ -134,6 +134,10 @@ function directionRotationZ(dir: HoldDirection): number {
     case "down": return Math.PI;
     case "left": return Math.PI / 2;
     case "right": return -Math.PI / 2;
+    case "up-left": return Math.PI / 4;
+    case "up-right": return -Math.PI / 4;
+    case "down-left": return Math.PI * 3 / 4;
+    case "down-right": return -Math.PI * 3 / 4;
   }
 }
 
@@ -295,16 +299,19 @@ function PlacedHold3D({ hold, wallAngleRad, toWorld, onClick, eraserMode }: {
           {indicators}
         </group>
       );
-    case "smear-pad":
+    case "smear-pad": {
+      // Smear pad sits flush on the wall — flat textured patch, no protrusion
+      const smearPos = toWorld(hold.x, hold.y, 0.003);
       return (
         <group onClick={handleClick}>
-          <mesh position={pos} rotation={[wallAngleRad, 0, dz]}>
-            <cylinderGeometry args={[0.07, 0.07, 0.008, 16]} />
-            <meshStandardMaterial color={holdColor} roughness={0.95} />
+          <mesh position={smearPos} rotation={[wallAngleRad, 0, 0]}>
+            <planeGeometry args={[0.14, 0.14]} />
+            <meshStandardMaterial color={holdColor} roughness={1.0} side={THREE.DoubleSide} transparent opacity={0.7} />
           </mesh>
           {indicators}
         </group>
       );
+    }
   }
 }
 
@@ -859,40 +866,39 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
   const elbowL = solveIK2Bone(shoulderL, wristL, upperArm, forearm, elbowBendL);
   const elbowR = solveIK2Bone(shoulderR, wristR, upperArm, forearm, elbowBendR);
 
-  // Knee bend direction computed from actual 3D geometry.
-  // Uses the hip-ankle vector and pelvis position to determine "away from wall"
-  // direction, then blends with gravity. No wall-angle dependency.
+  // Knee bend direction: knees must always bend AWAY from the wall and outward.
+  // Use the chest-to-wall direction as a reliable "away from wall" reference,
+  // since the chest is always offset from the wall surface.
   const computeKneeBend = (hip: V3, ankle: V3, turnDeg: number, lateralSign: number): V3 => {
     const hipToAnkle = v3sub(ankle, hip);
     const legDist = v3len(hipToAnkle);
     const maxLeg = thigh + shin;
     const bunchFactor = Math.max(0, 1 - legDist / (maxLeg * 0.95));
 
-    // "Away from wall" = direction from wall surface toward the climber's body.
-    // Use the pelvis offset from the wall midpoint between hip and ankle.
-    const limbMid: V3 = [(hip[0] + ankle[0]) / 2, (hip[1] + ankle[1]) / 2, (hip[2] + ankle[2]) / 2];
-    // The pelvis is offset from the wall; the direction from wall to pelvis is "outward"
-    const midToBody = v3sub(pelvis, limbMid);
-    // Project out the component along the limb axis to get perpendicular "outward"
+    // "Away from wall" direction: use the vector from the wall contact point
+    // (foot) toward the chest. This reliably points away from the wall.
+    const footToChest = v3sub(chest, ankle);
     const limbAxis = legDist > 0.001 ? v3normalize(hipToAnkle) : [0, -1, 0] as V3;
-    const alongLimb = v3dot(midToBody, limbAxis);
-    let outward = v3sub(midToBody, v3scale(limbAxis, alongLimb));
+    const alongLimb = v3dot(footToChest, limbAxis);
+    let outward = v3sub(footToChest, v3scale(limbAxis, alongLimb));
     const outLen = v3len(outward);
 
-    // Fallback: if pelvis is on the limb line, use Z-forward + up as outward
     if (outLen < 0.01) {
-      outward = v3normalize(v3add([0, 0, 1], [0, 0.5, 0]));
+      // Fallback: chest is directly along limb line. Use pelvis offset instead.
+      const hipToChest = v3sub(chest, hip);
+      outward = v3normalize(v3add(hipToChest, [0, 0, 0.1]));
     } else {
       outward = v3scale(outward, 1 / outLen);
     }
 
-    // Foot below hip? Blend more upward (natural standing knee bend)
+    // Foot below hip? Blend more upward (natural standing knee bend forward)
     const footBelow = Math.max(0, Math.min(1, (hip[1] - ankle[1]) / (maxLeg * 0.5)));
 
-    // Blend: outward (away from wall) + up (gravity-aware) + lateral (splay)
-    const outWeight = 0.6 + bunchFactor * 0.2;
-    const upWeight = 0.2 + footBelow * 0.5;
-    const lateralWeight = 0.1 + bunchFactor * 0.4;
+    // Blend: outward (away from wall) + lateral splay (knees apart)
+    // More lateral when bunched (feet near hips), more outward always
+    const outWeight = 0.7;
+    const upWeight = footBelow * 0.3;
+    const lateralWeight = 0.2 + bunchFactor * 0.5;
 
     let baseBend: V3 = v3normalize(
       v3add(
@@ -938,10 +944,11 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
     // Never below ground
     if (k[1] < 0) k[1] = 0;
 
-    // Keep knee on the body side of the wall: knee Z should be >= the more
-    // forward of hip Z or ankle Z (whichever is further from wall)
-    const minZ = Math.min(hip[2], ankle[2]);
-    if (k[2] < minZ - 0.05) k[2] = minZ - 0.05;
+    // Keep knee on the body side of the wall: knee must be at least as far
+    // from the wall as the hip (Z >= hip Z). The chest is always further
+    // from the wall, so use a blend of hip and chest Z as minimum.
+    const bodyZ = Math.max(hip[2], ankle[2], pelvis[2]);
+    if (k[2] < bodyZ) k[2] = bodyZ;
 
     return k;
   };

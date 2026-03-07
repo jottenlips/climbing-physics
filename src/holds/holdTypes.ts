@@ -1,7 +1,7 @@
 export type HoldType = "jug" | "crimp" | "sloper" | "pinch" | "pocket" | "volume"
   | "foot-chip" | "foot-edge" | "smear-pad";
 
-export type HoldDirection = "up" | "down" | "left" | "right";
+export type HoldDirection = "up" | "down" | "left" | "right" | "up-left" | "up-right" | "down-left" | "down-right";
 
 // "hand" = primarily a handhold, "foot" = primarily a foothold, "both" = usable by either
 export type HoldUsage = "hand" | "foot" | "both";
@@ -21,10 +21,10 @@ export const HOLD_INFO: Record<HoldType, {
   description: string;
   defaultUsage: HoldUsage;
 }> = {
-  jug:        { label: "Jug",        color: "#dd5533", description: "Large positive hold - easy grip",        defaultUsage: "both" },
+  jug:        { label: "Jug",        color: "#44aa55", description: "Large positive hold - easy grip",        defaultUsage: "both" },
   crimp:      { label: "Crimp",      color: "#ddaa22", description: "Small edge - finger strength",           defaultUsage: "both" },
   sloper:     { label: "Sloper",     color: "#7766cc", description: "Round, friction-dependent",              defaultUsage: "both" },
-  pinch:      { label: "Pinch",      color: "#44aa88", description: "Squeeze hold - thumb opposition",        defaultUsage: "hand" },
+  pinch:      { label: "Pinch",      color: "#dd7722", description: "Squeeze hold - thumb opposition",        defaultUsage: "hand" },
   pocket:     { label: "Pocket",     color: "#cc5599", description: "Hole - 1-3 finger pocket",               defaultUsage: "both" },
   volume:     { label: "Volume",     color: "#6688bb", description: "Large geometric shape",                  defaultUsage: "both" },
   "foot-chip":  { label: "Foot Chip",  color: "#8899aa", description: "Tiny nub - feet only",                 defaultUsage: "foot" },
@@ -35,9 +35,9 @@ export const HOLD_INFO: Record<HoldType, {
 // Map hold type + direction to the best pull direction for hands
 export function holdToPullHand(type: HoldType, dir: HoldDirection): "down" | "side" | "undercling" | "gaston" | "sloper" {
   // Direction modifies the natural pull direction
-  if (dir === "down") return "undercling";
-  if (dir === "left") return "side";
-  if (dir === "right") return "side";
+  if (dir === "down" || dir === "down-left" || dir === "down-right") return "undercling";
+  if (dir === "left" || dir === "up-left") return "side";
+  if (dir === "right" || dir === "up-right") return "gaston";
   // dir === "up" (default)
   switch (type) {
     case "jug": return "down";
@@ -59,15 +59,17 @@ export function holdToPullFoot(
   isOverhang: boolean
 ): "edge" | "smear" | "toe-hook" | "heel-hook" | "toe-cam" | "backstep" {
   // Overhanging terrain favors hooks
-  if (isOverhang && dir === "down") return "toe-hook";
-  if (isOverhang && (dir === "left" || dir === "right")) return "heel-hook";
+  const isDown = dir === "down" || dir === "down-left" || dir === "down-right";
+  const isSide = dir === "left" || dir === "right" || dir === "up-left" || dir === "up-right" || dir === "down-left" || dir === "down-right";
+  if (isOverhang && isDown) return "toe-hook";
+  if (isOverhang && isSide) return "heel-hook";
 
   switch (type) {
     case "jug":
-      return dir === "down" ? "toe-hook" : "edge";
+      return isDown ? "toe-hook" : "edge";
     case "crimp":
     case "foot-edge":
-      return dir === "left" || dir === "right" ? "backstep" : "edge";
+      return isSide ? "backstep" : "edge";
     case "sloper":
     case "volume":
     case "smear-pad":

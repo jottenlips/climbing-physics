@@ -41,17 +41,22 @@ function feetToFtIn(ft: number): string {
 }
 
 function comfortablePose(angleDeg: number) {
-  const t = Math.max(0, angleDeg) / 90;
+  const t = Math.max(0, angleDeg) / 90; // 0=vert, 1=roof
   const slab = Math.max(0, -angleDeg) / 30;
-  const handSpreadX = 0.18 + t * 0.08;
-  const handY = 2.6 - t * 0.2 + slab * 0.1;
-  const footSpreadX = 0.12 + t * 0.06;
-  const footY = 1.0 + t * 0.4 - slab * 0.15;
+
+  // Hands at a comfortable height — not fully extended overhead
+  const handSpreadX = 0.22 + t * 0.06;
+  const handY = 1.6 + t * 0.1 + slab * 0.1;
+
+  // Feet well below hands — wide stance, legs extended
+  const footSpreadX = 0.25 + t * 0.08;
+  const footY = 0.1 + t * 0.05 - slab * 0.1;
+
   return {
     lhX: -handSpreadX, lhY: handY,
-    rhX: handSpreadX, rhY: handY + 0.05,
+    rhX: handSpreadX, rhY: handY + 0.1,
     lfX: -footSpreadX, lfY: footY,
-    rfX: footSpreadX, rfY: footY - 0.05,
+    rfX: footSpreadX, rfY: footY + 0.05,
   };
 }
 
@@ -460,7 +465,7 @@ const DEFAULT_STATE: ClimberState = {
   leftHandPull: "down", rightHandPull: "down",
   leftFootPull: "edge" as PullDirection, rightFootPull: "edge" as PullDirection,
   leftKneeTurnDeg: 0, rightKneeTurnDeg: 0,
-  hipOffset: 0.15, torsoOffset: 0.65,
+  hipOffset: 0.35, torsoOffset: 0.5,
   leftHandOn: true, rightHandOn: true, leftFootOn: true, rightFootOn: true,
   ...comfortablePose(45),
 };
@@ -753,8 +758,16 @@ function App() {
   }, [stopSim]);
 
   const clearHolds = useCallback(() => {
-    setPlacedHolds([]); resetClimber();
-  }, [resetClimber]);
+    setPlacedHolds([]);
+    setWallSegments([{ height: 4, angleDeg: 45 }]);
+    setState({ ...DEFAULT_STATE });
+    stopSim();
+    setSittingOnGround(false);
+    setToppedOut(false);
+    setRagdollParts(undefined);
+    setIsFalling(false);
+    setFatigue({ left: 0, right: 0 });
+  }, [stopSim]);
 
   const loadRoute = useCallback((preset: RoutePreset) => {
     stopSim();
@@ -1331,16 +1344,19 @@ function App() {
                   </button>
                 ))}
                 <span style={{ width: 1, height: 20, background: "#444", margin: "0 2px" }} />
-                {(["up", "down", "left", "right"] as HoldDirection[]).map((d) => {
-                  const arrow = d === "up" ? "\u2191" : d === "down" ? "\u2193" : d === "left" ? "\u2190" : "\u2192";
+                {(["up", "up-left", "up-right", "left", "right", "down-left", "down-right", "down"] as HoldDirection[]).map((d) => {
+                  const arrows: Record<string, string> = {
+                    "up": "\u2191", "down": "\u2193", "left": "\u2190", "right": "\u2192",
+                    "up-left": "\u2196", "up-right": "\u2197", "down-left": "\u2199", "down-right": "\u2198",
+                  };
                   return (
                     <button key={d} onClick={() => setSelectedDirection(d)} style={{
-                      ...chip, padding: "4px 8px", fontSize: 13, textAlign: "center",
+                      ...chip, padding: "4px 6px", fontSize: 13, textAlign: "center", minWidth: 28,
                       background: selectedDirection === d ? "#4488ff" : "#2a2a35",
                       color: selectedDirection === d ? "#fff" : "#999",
                       fontWeight: selectedDirection === d ? 700 : 400,
                     }}>
-                      {arrow}
+                      {arrows[d]}
                     </button>
                   );
                 })}
