@@ -940,7 +940,7 @@ function App() {
           leftFootOn: s.leftFootOn, rightFootOn: s.rightFootOn,
           leftHand: { x: s.lhX, y: s.lhY }, rightHand: { x: s.rhX, y: s.rhY },
           leftFoot: { x: s.lfX, y: s.lfY }, rightFoot: { x: s.rfX, y: s.rfY },
-          centerOfGravity: { x: (s.lhX + s.rhX + s.lfX + s.rfX) / 4, y: (s.lhY + s.rhY + s.lfY + s.rfY) / 4 - 0.1 },
+          centerOfGravity: { x: (s.lfX + s.rfX) / 2 + ((s.lhX + s.rhX) / 2 - (s.lfX + s.rfX) / 2) * 0.55, y: (s.lfY + s.rfY) / 2 + ((s.lhY + s.rhY) / 2 - (s.lfY + s.rfY) / 2) * 0.55 },
         };
         if (!computeForces(liveConfig).canHold) { stopped = true; triggerFall("grip"); return; }
       }
@@ -1034,7 +1034,7 @@ function App() {
     leftFootOn: state.leftFootOn, rightFootOn: state.rightFootOn,
     leftHand: { x: state.lhX, y: state.lhY }, rightHand: { x: state.rhX, y: state.rhY },
     leftFoot: { x: state.lfX, y: state.lfY }, rightFoot: { x: state.rfX, y: state.rfY },
-    centerOfGravity: { x: (state.lhX + state.rhX + state.lfX + state.rfX) / 4, y: (state.lhY + state.rhY + state.lfY + state.rfY) / 4 - 0.1 },
+    centerOfGravity: { x: (state.lfX + state.rfX) / 2 + ((state.lhX + state.rhX) / 2 - (state.lfX + state.rfX) / 2) * 0.55, y: (state.lfY + state.rfY) / 2 + ((state.lhY + state.rhY) / 2 - (state.lfY + state.rfY) / 2) * 0.55 },
   }), [state]);
 
   const forces = useMemo(() => computeForces(config), [config]);

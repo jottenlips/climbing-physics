@@ -183,7 +183,7 @@ export function planRoute(holds: PlacedHold[], wallAngleDeg: number, startHolds:
     holdType: hold?.type ?? null,
     holdDirection: hold?.direction ?? "up",
     holdUsage: hold?.usage ?? "both",
-    bodyTwist: 0, hipOffset: isOverhang ? 0.1 : 0.3, torsoOffset: 0.5,
+    bodyTwist: 0, hipOffset: isOverhang ? 0.2 : 0.3, torsoOffset: 0.5,
     leftKneeTurn: 0, rightKneeTurn: 0,
     duration: 400, arcHeight: 0, isSetup: true,
   });
@@ -212,9 +212,9 @@ export function planRoute(holds: PlacedHold[], wallAngleDeg: number, startHolds:
     if (!isOverhang) twist *= 0.5;
 
     const hipOff = isOverhang
-      ? Math.max(0.05, 0.15 - steepness * 0.08)
+      ? Math.max(0.15, 0.3 - steepness * 0.12)
       : isSlab ? Math.max(0.2, 0.5 - span * 0.1)
-      : Math.max(0.1, Math.min(0.5, 0.25 + span * 0.05));
+      : Math.max(0.15, Math.min(0.5, 0.3 + span * 0.05));
 
     const torsoOff = isOverhang
       ? Math.max(0.3, 0.45 - steepness * 0.1)
@@ -263,12 +263,14 @@ export function planRoute(holds: PlacedHold[], wallAngleDeg: number, startHolds:
 
     for (const fh of footCandidates) {
       if (exclude.has(fh.id)) continue;
-      if (fh.y > targetY + 0.4 || fh.y < targetY - 1.0) continue;
+      // Don't place feet above the target or way below
+      if (fh.y > targetY + 0.15 || fh.y < targetY - 1.2) continue;
       const d = distBetween({ x: targetX, y: targetY }, fh);
       if (d > LEG_REACH) continue;
 
-      // Prefer: close to target height, same lateral side, actual footholds over "both"
-      const yScore = 1 - Math.abs(fh.y - targetY) * 1.2;
+      // Prefer: at or slightly below target height, penalize above target
+      const aboveTarget = Math.max(0, fh.y - targetY);
+      const yScore = 1 - Math.abs(fh.y - targetY) * 1.2 - aboveTarget * 3;
       const xScore = 1 - Math.abs(fh.x - targetX) * 0.4;
       const typeBonus = fh.usage === "foot" ? 0.3 : 0;
       const score = yScore + xScore * 0.5 + typeBonus;
@@ -313,11 +315,11 @@ export function planRoute(holds: PlacedHold[], wallAngleDeg: number, startHolds:
     const hand = pickHand(target, lastHandSide);
 
     // --- Step 1: Move feet if needed ---
-    // Ideal foot position: below the next hand hold, spread for stability
-    const idealFootY = target.y - 0.7; // feet about 0.7m below where we're reaching
+    // Ideal foot position: well below the hand hold for natural stance
+    const idealFootY = target.y - 1.0; // feet about 1m below where we're reaching
     const footAvgY = (current.leftFoot.y + current.rightFoot.y) / 2;
     const reachable = canHandReach(hand, target);
-    const feetTooLow = (target.y - footAvgY) > 1.4;
+    const feetTooLow = (target.y - footAvgY) > 1.1;
     const needFeet = !reachable || feetTooLow;
 
     if (needFeet) {
@@ -336,7 +338,7 @@ export function planRoute(holds: PlacedHold[], wallAngleDeg: number, startHolds:
       // Check if we can reach now; if not, move the other foot too
       if (!canHandReach(hand, target)) {
         const foot2X = hand === "leftHand" ? target.x - 0.1 : target.x + 0.1;
-        const foot2 = findFoothold(foot2X, idealFootY + 0.15, usedFootIds);
+        const foot2 = findFoothold(foot2X, idealFootY - 0.1, usedFootIds);
         if (canFootReach(higherFoot, foot2)) {
           moves.push(makeMove(higherFoot, foot2));
           usedFootIds.add(foot2.id);
@@ -352,8 +354,8 @@ export function planRoute(holds: PlacedHold[], wallAngleDeg: number, startHolds:
   // --- Final foot adjustment ---
   const finalHandAvgY = (current.leftHand.y + current.rightHand.y) / 2;
   const finalFootAvgY = (current.leftFoot.y + current.rightFoot.y) / 2;
-  if (finalHandAvgY - finalFootAvgY > 1.0) {
-    const targetFootY = finalHandAvgY - 0.7;
+  if (finalHandAvgY - finalFootAvgY > 1.2) {
+    const targetFootY = finalHandAvgY - 1.0;
     for (const foot of ["leftFoot", "rightFoot"] as Limb[]) {
       if (current[foot].y < targetFootY - 0.15) {
         const fh = findFoothold(current[foot].x, targetFootY, usedFootIds);

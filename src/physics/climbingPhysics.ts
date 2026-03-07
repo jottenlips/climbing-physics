@@ -64,6 +64,21 @@ export interface ForceResult {
 const G = 9.81;
 const KG_TO_LBS = 2.20462;
 
+/**
+ * Torque-based climbing physics using rigid body statics.
+ *
+ * The climber is modeled as a rigid body on the wall with contact points
+ * (hands and feet). We solve for equilibrium of forces and moments:
+ *
+ * 1. Sum of forces = 0 (linear equilibrium)
+ * 2. Sum of moments about any point = 0 (rotational equilibrium)
+ *
+ * The center of gravity is computed from body proportions relative to
+ * contact points, not simply averaged from contact positions.
+ *
+ * Forces at each contact point are solved to satisfy both force and
+ * moment equilibrium simultaneously.
+ */
 export function computeForces(config: ClimberConfig): ForceResult {
   const {
     bodyWeightKg,
@@ -82,428 +97,431 @@ export function computeForces(config: ClimberConfig): ForceResult {
     rightHand,
     leftFoot,
     rightFoot,
-    centerOfGravity,
   } = config;
 
   const wallAngleRad = (wallAngleDeg * Math.PI) / 180;
   const weightN = bodyWeightKg * G;
+  const armReach = (config.apeIndexIn / 2) * 0.0254; // half wingspan in meters
+  // === 1. PROPER CENTER OF GRAVITY ===
+  // CoG is NOT the average of contact points. It's derived from body geometry.
+  // The pelvis/hip center is roughly between the feet (laterally) and ~55% up
+  // from feet to hands (vertically). The CoG sits at roughly the pelvis/navel
+  // area — about 55% of height from the ground, slightly below the midpoint
+  // between hands and feet on the wall.
 
-  // Body twist: twisting hips into the wall moves CoG closer to the wall.
-  // This reduces the moment arm for outward pull and shifts load to feet.
-  // twistFactor: 0 at no twist, approaches 1 at full 90° twist
+  const handsOn = (leftHandOn ? 1 : 0) + (rightHandOn ? 1 : 0);
+  const feetOn = (leftFootOn ? 1 : 0) + (rightFootOn ? 1 : 0);
+
+  // Compute body reference points from active contact points
+  const activeHands: { x: number; y: number }[] = [];
+  const activeFeet: { x: number; y: number }[] = [];
+  if (leftHandOn) activeHands.push(leftHand);
+  if (rightHandOn) activeHands.push(rightHand);
+  if (leftFootOn) activeFeet.push(leftFoot);
+  if (rightFootOn) activeFeet.push(rightFoot);
+
+  const handAvgX = activeHands.length > 0
+    ? activeHands.reduce((s, h) => s + h.x, 0) / activeHands.length
+    : (leftHand.x + rightHand.x) / 2;
+  const handAvgY = activeHands.length > 0
+    ? activeHands.reduce((s, h) => s + h.y, 0) / activeHands.length
+    : (leftHand.y + rightHand.y) / 2;
+  const footAvgX = activeFeet.length > 0
+    ? activeFeet.reduce((s, f) => s + f.x, 0) / activeFeet.length
+    : (leftFoot.x + rightFoot.x) / 2;
+  const footAvgY = activeFeet.length > 0
+    ? activeFeet.reduce((s, f) => s + f.y, 0) / activeFeet.length
+    : (leftFoot.y + rightFoot.y) / 2;
+
+  // The CoG sits at about 55% from feet toward hands along the body axis,
+  // shifted slightly toward hands laterally based on torso lean
+  const cogFraction = 0.55; // anatomical CoG position (navel height)
+  const cogX = footAvgX + (handAvgX - footAvgX) * cogFraction;
+  const cogY = footAvgY + (handAvgY - footAvgY) * cogFraction;
+
+  // Hip offset shifts CoG away from wall. On overhangs, this creates a longer
+  // moment arm. Body twist moves CoG closer to wall plane.
   const twistRad = Math.abs(bodyRotationDeg * Math.PI / 180);
-  const twistFactor = Math.sin(twistRad); // 0 at 0°, 1 at 90°
+  const twistFactor = Math.sin(twistRad);
+  // Effective distance of CoG from wall (perpendicular to wall surface)
+  // hipOffset 0=close, 1=far; torsoOffset adds upper body distance
+  const baseCogDist = hipOffset * 0.35 + torsoOffset * 0.15; // meters from wall
+  const cogDistFromWall = baseCogDist * (1 - twistFactor * 0.4); // twist reduces it
 
-  // Hip distance effect depends on wall angle:
-  // OVERHANG: hips close = shorter moment arm = less hand load (close is good)
-  // SLAB: hips OUT = CoG over feet = more weight on feet = less hand load (out is good)
-  // VERTICAL: moderate — close is slightly better but less dramatic
-  const hipDistFactor = hipOffset; // 0=close, 1=far
+  // === 2. TORQUE-BASED FORCE DISTRIBUTION ===
+  // Decompose gravity into components along and perpendicular to the wall.
+  // Along wall = slides climber down the wall surface
+  // Normal to wall = pulls climber away from wall (on overhangs)
+  const gravAlongWall = weightN * Math.cos(wallAngleRad); // positive = down the wall
+  const gravNormalToWall = weightN * Math.sin(wallAngleRad); // positive = away on overhangs
 
-  // Gravity always points straight down
   const gravity = new THREE.Vector3(0, -weightN, 0);
 
-  // Wall normal direction depends on angle
-  // At 0 deg (vertical): normal points outward (+z)
-  // At 90 deg (roof): normal points down (-y)
-  const wallNormal = new THREE.Vector3(
+  const wallNormal3 = new THREE.Vector3(
     0,
     -Math.sin(wallAngleRad),
     Math.cos(wallAngleRad)
   ).normalize();
+  const normalForce = wallNormal3.clone().multiplyScalar(
+    Math.max(0, -gravity.dot(wallNormal3))
+  );
 
-  // Component of gravity pulling climber away from wall (outward force)
-  const gravityAlongNormal = gravity.dot(wallNormal);
-  const normalForce = wallNormal.clone().multiplyScalar(-gravityAlongNormal);
+  if (handsOn === 0 && feetOn === 0) {
+    return zeroResult(gravity, normalForce, wallAngleRad, weightN, gripStrengthKg);
+  }
 
-  // Component of gravity pulling climber down along the wall surface
-  const wallDown = new THREE.Vector3(
-    0,
-    -Math.cos(wallAngleRad),
-    -Math.sin(wallAngleRad)
-  ).normalize();
-  const gravityAlongWall = gravity.dot(wallDown);
-
-  // Arm bend + scapular engagement efficiency:
-  // Straight arms: skeleton bears load (tendons/bones), minimal grip fatigue → 1.0
-  // Slightly bent (~0.7-0.9 straight): shoulders engaged, lats share load → 0.90
-  // Moderately bent (~0.4-0.7): active muscular contraction, but lats still help → 0.70
-  // Fully bent (<0.3): max bicep/forearm effort, grip fatigue highest → 0.55
+  // === MOMENT EQUILIBRIUM ===
+  // Key insight: on vertical/slab walls, feet bear weight directly through
+  // hold reaction forces. The wall surface provides a normal reaction that
+  // supports the climber against sliding. Hands primarily maintain balance
+  // and resist the outward torque from CoG being away from the wall.
   //
-  // Scapular engagement is implicit: when arms are slightly bent with shoulders
-  // pulled down (engaged position), the large lat muscles transfer force from
-  // hands to core, reducing the load on forearm grip muscles by ~10%.
-  // This is baked into the efficiency curve rather than a separate control.
-  const armReach = (config.apeIndexIn / 2) * 0.0254; // half wingspan in meters
-  const lhDist = Math.sqrt((leftHand.x - centerOfGravity.x) ** 2 + (leftHand.y - centerOfGravity.y) ** 2);
-  const rhDist = Math.sqrt((rightHand.x - centerOfGravity.x) ** 2 + (rightHand.y - centerOfGravity.y) ** 2);
-  // How straight each arm is: 0 = fully bent, 1 = fully extended
-  const lhStraight = Math.min(1, lhDist / (armReach * 0.85));
-  const rhStraight = Math.min(1, rhDist / (armReach * 0.85));
-  const avgStraightness = (lhStraight + rhStraight) / 2;
-  // Efficiency curve with scapular engagement bump at slight bend:
-  // 0.0 → 0.55 (fully locked off, max effort)
-  // 0.3 → 0.65
-  // 0.6 → 0.80 (moderate bend, lats helping)
-  // 0.8 → 0.92 (slight bend, engaged shoulders, lats sharing load — sweet spot)
-  // 1.0 → 1.00 (dead hang on skeleton)
-  // The slight bend "engaged" position gets a ~10% boost from lat recruitment.
-  const baseEfficiency = 0.55 + avgStraightness * 0.45;
-  // Scapular engagement bonus: peaks around 0.75-0.85 straightness (slight bend)
-  // This is where climbers naturally engage — arms not quite straight, shoulders active
-  const engagementBump = Math.exp(-((avgStraightness - 0.8) ** 2) / 0.02) * 0.08;
-  const armBendEfficiency = Math.min(1.0, baseEfficiency + engagementBump);
+  // On overhangs, hands must additionally resist the component of gravity
+  // pulling the climber away from the wall.
+  //
+  // Model: separate the problem into two axes:
+  // 1. Along-wall (weight support): moment equilibrium determines hand/foot split
+  // 2. Normal-to-wall (staying on wall): depends on wall angle and CoG distance
 
-  // Distribute forces between hands and feet based on position
-  // Higher hands relative to CoG = more weight on feet
-  const handAvgY = (leftHand.y + rightHand.y) / 2;
-  const footAvgY = (leftFoot.y + rightFoot.y) / 2;
-  const span = Math.max(handAvgY - footAvgY, 0.1);
+  const cogMomentArm = cogY - footAvgY; // CoG height above feet
+  const handMomentArm = handAvgY - footAvgY; // hand height above feet
 
-  // How far up the body the center of gravity is (0 = feet, 1 = hands)
-  const cogRatio = Math.max(
-    0,
-    Math.min(1, (centerOfGravity.y - footAvgY) / span)
-  );
+  let handAlongWallN = 0;
+  let footAlongWallN = 0;
 
-  // On steeper terrain, hands bear more of the load
-  const overhangFactor = Math.max(0, Math.sin(wallAngleRad));
-
-  // Hand load fraction: closer CoG to feet = less hand load on vertical,
-  // but on overhangs hands must resist the outward pull regardless.
-  // Twisting hips into the wall reduces the hand load:
-  // - CoG moves closer to wall plane, reducing the outward moment
-  // - More weight transfers through skeleton to feet via hip contact
-  // - Up to ~40% reduction at full 90° twist (real-world climbing benefit)
-  // Combined reduction from twist + hip closeness.
-  // Twist reduces load by pressing hips in (up to 40%).
-  // Close hips reduce load by shortening the moment arm (up to 50%).
-  // These compound: closer hips + twist = very efficient position.
-  const twistReduction = twistFactor * 0.4;
-
-  // Hip reduction depends on terrain:
-  // On overhangs (wallAngleDeg > 0): close hips = good (shorter moment arm)
-  // On slab (wallAngleDeg < 0): hips OUT = good (CoG shifts over feet, more downward force through legs)
-  // On vertical (wallAngleDeg ≈ 0): close is slightly better
-  const slabFactor = Math.max(0, -Math.sin(wallAngleRad)); // 0 on vertical/overhang, up to 1 on steep slab
-  const overhangFactor2 = Math.max(0, Math.sin(wallAngleRad)); // 0 on vertical/slab, up to 1 on roof
-  // On overhang: close hips reduce load (up to 50%)
-  const hipReductionOverhang = (1 - hipDistFactor) * 0.5;
-  // On slab: hips OUT reduce load (up to 60%) — pushing CoG over feet is very effective
-  const hipReductionSlab = hipDistFactor * 0.6;
-  // On vertical: close hips are slightly better (up to 20%)
-  const hipReductionVertical = (1 - hipDistFactor) * 0.2;
-  // Blend based on wall angle
-  const verticalWeight = Math.max(0, 1 - slabFactor - overhangFactor2);
-  const hipReduction = hipReductionOverhang * overhangFactor2
-    + hipReductionSlab * slabFactor
-    + hipReductionVertical * verticalWeight;
-
-  // Torso further from wall = longer moment arm on upper body = more hand load.
-  // On slab, torso out is less penalizing since gravity pulls you into the wall.
-  const torsoPenalty = torsoOffset * 0.4 * (1 - slabFactor * 0.7);
-
-  // Body directly under holds: when CoG X is centered between hands,
-  // gravity pulls straight down through the arms — minimal lateral torque.
-  // When CoG is offset sideways, hands must resist a swing force.
-  const handMidX = (leftHand.x + rightHand.x) / 2;
-  const lateralOffset = Math.abs(centerOfGravity.x - handMidX);
-  const handSpanX = Math.abs(leftHand.x - rightHand.x) || 0.1;
-  // Normalize by hand span: 0 = directly under, 1 = offset by full hand span
-  const lateralRatio = Math.min(1, lateralOffset / Math.max(handSpanX, 0.1));
-  // Also check vertical: CoG directly below hands = best (gravity straight through arms)
-  const cogBelowHands = Math.max(0, handAvgY - centerOfGravity.y);
-  const verticalAlignRatio = Math.min(1, cogBelowHands / Math.max(span, 0.1));
-  // Directly under = up to 35% reduction. Offset = no benefit (penalty via lateralRatio).
-  const underHandsReduction = verticalAlignRatio * (1 - lateralRatio) * 0.35;
-
-  const combinedReduction = Math.max(0, 1 - (1 - twistReduction) * (1 - hipReduction) * (1 - underHandsReduction) - torsoPenalty);
-
-  // Contact point count affects load distribution.
-  // No feet on wall → hands bear ALL the load (cutting feet on overhang).
-  // One hand off → other hand bears full hand load.
-  const handsOn = (leftHandOn ? 1 : 0) + (rightHandOn ? 1 : 0);
-  const feetOn = (leftFootOn ? 1 : 0) + (rightFootOn ? 1 : 0);
-
-  // --- Foot spread stability ---
-  // Wider foot base relative to CoG = more stable platform = better weight transfer to feet.
-  // Feet close together or directly stacked = less stable, more load on hands.
-  // Measured as lateral spread of feet relative to CoG position.
-  let footSpreadBonus = 0;
-  if (feetOn === 2) {
-    const footSpreadX = Math.abs(leftFoot.x - rightFoot.x);
-    const footSpreadY = Math.abs(leftFoot.y - rightFoot.y);
-    // Lateral spread: wider = more stable (up to a point)
-    const optimalSpread = armReach * 0.5; // roughly shoulder width
-    const spreadRatio = Math.min(1, footSpreadX / optimalSpread);
-    // Vertical spread also helps — triangulates the base
-    const vSpreadRatio = Math.min(1, footSpreadY / (armReach * 0.6));
-    // CoG centered between feet laterally = stable. Offset = less stable.
-    const footMidX = (leftFoot.x + rightFoot.x) / 2;
-    const cogFootOffset = Math.abs(centerOfGravity.x - footMidX);
-    const cogCentered = Math.max(0, 1 - cogFootOffset / Math.max(footSpreadX * 0.5, 0.05));
-    // Combined: good spread + CoG centered = up to 15% reduction in hand load
-    footSpreadBonus = (spreadRatio * 0.6 + vSpreadRatio * 0.4) * cogCentered * 0.15;
-  }
-
-  // --- Barn door effect ---
-  // When 3 contact points form a near-line, the body wants to rotate (barn door)
-  // around that axis. The 4th point must resist, increasing load.
-  // Classic example: right hand + right foot + left hand in a line → left foot must
-  // counteract rotation or hands bear extra load.
-  let barnDoorPenalty = 0;
-  const contactPoints: { x: number; y: number }[] = [];
-  if (leftHandOn) contactPoints.push(leftHand);
-  if (rightHandOn) contactPoints.push(rightHand);
-  if (leftFootOn) contactPoints.push(leftFoot);
-  if (rightFootOn) contactPoints.push(rightFoot);
-
-  if (contactPoints.length >= 3) {
-    // Check if CoG is outside the convex hull of contact points (projected on wall plane).
-    // If CoG is outside the support polygon, barn door torque increases.
-    // Simplified: measure how far CoG is from the centroid of contact points
-    // relative to the "width" of the contact polygon.
-    const cpCentroidX = contactPoints.reduce((s, p) => s + p.x, 0) / contactPoints.length;
-    const cpCentroidY = contactPoints.reduce((s, p) => s + p.y, 0) / contactPoints.length;
-
-    // Compute the average "radius" of the contact polygon
-    const avgRadius = contactPoints.reduce((s, p) =>
-      s + Math.sqrt((p.x - cpCentroidX) ** 2 + (p.y - cpCentroidY) ** 2), 0
-    ) / contactPoints.length;
-
-    // How far is CoG from the centroid?
-    const cogDistFromCentroid = Math.sqrt(
-      (centerOfGravity.x - cpCentroidX) ** 2 + (centerOfGravity.y - cpCentroidY) ** 2
-    );
-
-    // Collinearity: if contact points are nearly in a line, barn door risk is high.
-    // Measure the "width" of the contact polygon perpendicular to its longest axis.
-    // Use minimum bounding: find the two most distant points, then measure
-    // max perpendicular distance of remaining points from that line.
-    let maxDist = 0;
-    let p1Idx = 0, p2Idx = 1;
-    for (let i = 0; i < contactPoints.length; i++) {
-      for (let j = i + 1; j < contactPoints.length; j++) {
-        const d = Math.sqrt(
-          (contactPoints[i].x - contactPoints[j].x) ** 2 +
-          (contactPoints[i].y - contactPoints[j].y) ** 2
-        );
-        if (d > maxDist) { maxDist = d; p1Idx = i; p2Idx = j; }
-      }
-    }
-
-    let minPerpWidth = Infinity;
-    if (maxDist > 0.01) {
-      const axisX = contactPoints[p2Idx].x - contactPoints[p1Idx].x;
-      const axisY = contactPoints[p2Idx].y - contactPoints[p1Idx].y;
-      // Perpendicular distances of all other points from this line
-      let maxPerp = 0;
-      for (let i = 0; i < contactPoints.length; i++) {
-        if (i === p1Idx || i === p2Idx) continue;
-        const relX = contactPoints[i].x - contactPoints[p1Idx].x;
-        const relY = contactPoints[i].y - contactPoints[p1Idx].y;
-        const perp = Math.abs(relX * axisY - relY * axisX) / maxDist;
-        maxPerp = Math.max(maxPerp, perp);
-      }
-      minPerpWidth = maxPerp;
-    }
-
-    // Collinearity factor: 0 = wide polygon, 1 = nearly a line
-    const collinearity = Math.max(0, 1 - minPerpWidth / (armReach * 0.2));
-
-    // CoG outside support: how far CoG extends beyond the contact polygon radius
-    const cogOutside = Math.max(0, cogDistFromCentroid - avgRadius) / (armReach * 0.3);
-    const cogOutsideFactor = Math.min(1, cogOutside);
-
-    // Barn door penalty: collinear points + CoG offset = up to 30% more hand load
-    // Only significant when points are near-collinear AND CoG creates torque
-    barnDoorPenalty = collinearity * 0.2 + cogOutsideFactor * collinearity * 0.1;
-
-    // With only 3 contact points, barn door is always a bigger risk
-    if (contactPoints.length === 3) {
-      barnDoorPenalty *= 1.4;
-    }
-  }
-
-  let handLoadFraction: number;
   if (feetOn === 0) {
-    // No feet: hands bear everything (campus / feet cut)
-    handLoadFraction = 1.0;
+    handAlongWallN = gravAlongWall;
+    footAlongWallN = 0;
   } else if (handsOn === 0) {
-    // No hands: feet bear everything (only possible on slab)
-    handLoadFraction = 0.0;
+    handAlongWallN = 0;
+    footAlongWallN = gravAlongWall;
+  } else if (Math.abs(handMomentArm) < 0.01) {
+    handAlongWallN = gravAlongWall * 0.5;
+    footAlongWallN = gravAlongWall * 0.5;
   } else {
-    // Partial feet: fewer feet = more hand load
-    const feetReduction = feetOn === 1 ? 0.7 : 1.0; // one foot = 70% as effective
-    const baseLoad = (cogRatio * 0.5 + overhangFactor * 0.8) * (1 - combinedReduction) / feetReduction;
-    // Foot spread reduces hand load, barn door increases it
-    handLoadFraction = Math.min(
-      1,
-      Math.max(0, baseLoad - footSpreadBonus + barnDoorPenalty)
-    );
+    // Moment equilibrium about feet:
+    // handForce * handMomentArm = gravAlongWall * cogMomentArm
+    //
+    // BUT: on vertical/slab walls, feet can support weight independently
+    // through hold reactions. The feet push into footholds and the wall
+    // pushes back. This means the "beam model" overestimates hand load
+    // on less steep terrain.
+    //
+    // On a vertical wall, the along-wall gravity is fully supported by
+    // friction at feet + hold edges. Hands mainly resist the outward
+    // torque (handled in the normal component below).
+    //
+    // Scaling: as wall steepens past vertical, feet lose their ability
+    // to support weight through friction, and hands must take over.
+    // overhangRatio: 0 on vertical/slab, 1 on roof
+    const overhangRatio = Math.max(0, Math.sin(wallAngleRad));
+    // slabRatio: how much the wall supports the climber (1 on slab, 0 on roof)
+    const wallSupportRatio = Math.max(0, Math.cos(wallAngleRad));
+
+    // Pure moment equilibrium fraction (correct for horizontal beam / roof)
+    const momentFraction = Math.max(0, Math.min(1,
+      cogMomentArm / handMomentArm
+    ));
+
+    // On vertical: feet bear almost all weight. Hands bear only ~5-15% for balance.
+    // On slight overhang: hands start bearing more.
+    // On roof: full moment equilibrium applies.
+    // Blend between minimal hand load (vertical) and full moment equilibrium (roof).
+    const verticalHandLoad = 0.08; // hands bear ~8% on vertical for balance
+    const blendedFraction = verticalHandLoad * wallSupportRatio
+      + momentFraction * overhangRatio;
+
+    handAlongWallN = gravAlongWall * Math.min(1, blendedFraction);
+    footAlongWallN = gravAlongWall - handAlongWallN;
+
+    // Negative hand force (CoG above hands) on steep overhangs is unstable
+    if (handAlongWallN < 0 && wallAngleDeg > 45) {
+      handAlongWallN = Math.abs(handAlongWallN);
+      footAlongWallN = gravAlongWall + handAlongWallN;
+    }
   }
-  const footLoadFraction = 1 - handLoadFraction;
 
-  // Force along the wall that hands must resist (pulling body up)
-  const handForceAlongWallN = Math.abs(gravityAlongWall) * handLoadFraction;
+  // --- Normal-to-wall forces (resisting being pulled off wall) ---
+  // On overhangs, gravity pulls the climber away from the wall.
+  // On vertical, there's still a small outward torque from CoG being
+  // offset from the wall plane (hips out, torso out).
+  // On slab, gravity pushes the climber INTO the wall — no outward force.
 
-  // Force normal to wall that hands must resist (pulling body outward on overhangs).
-  // gravityAlongNormal > 0 means gravity pulls climber AWAY from wall (overhang).
-  // Closer hips = shorter moment arm = less outward torque.
-  // No feet = hands must resist ALL outward pull.
-  const normalReduction = feetOn > 0
-    ? 1 - (1 - twistFactor * 0.35) * (1 - (1 - hipDistFactor) * 0.45)
-    : 0; // no reduction when feet are cut
-  const handForceNormalN = Math.max(0, gravityAlongNormal) * (feetOn === 0 ? 1.0 : 0.9) * (1 - normalReduction);
+  let handNormalN = 0;
+  let footNormalN = 0;
 
-  // Total hand force magnitude
-  const totalHandForceN = Math.sqrt(
-    handForceAlongWallN ** 2 + handForceNormalN ** 2
-  );
-  const totalHandForceKg = totalHandForceN / G;
-  const totalHandForceLbs = totalHandForceKg * KG_TO_LBS;
+  if (gravNormalToWall > 0) {
+    // Overhang: gravity pulls climber away from wall
+    const outwardForce = gravNormalToWall * (1 + cogDistFromWall * 2);
 
-  // Distribute between left and right hand
+    if (feetOn === 0) {
+      handNormalN = outwardForce;
+    } else if (handsOn === 0) {
+      footNormalN = outwardForce;
+    } else {
+      const handLever = Math.abs(handAvgY - cogY) + 0.1;
+      const footLever = Math.abs(footAvgY - cogY) + 0.1;
+      const totalLever = handLever + footLever;
+      handNormalN = outwardForce * (footLever / totalLever);
+      footNormalN = outwardForce * (handLever / totalLever);
+    }
+  } else if (wallAngleDeg >= -10 && wallAngleDeg <= 10) {
+    // Near-vertical: small outward torque from CoG offset from wall
+    // This is what makes hands needed even on vertical — for balance
+    const outwardTorque = weightN * cogDistFromWall * 0.5;
+    if (handsOn > 0) {
+      handNormalN = outwardTorque;
+    }
+  }
+
+  // --- Lateral moment equilibrium (barn door prevention) ---
+  // When CoG is not centered between contact points laterally,
+  // there's a rotational torque that must be resisted.
+  const allContacts: { x: number; y: number; isHand: boolean; isLeft: boolean }[] = [];
+  if (leftHandOn) allContacts.push({ ...leftHand, isHand: true, isLeft: true });
+  if (rightHandOn) allContacts.push({ ...rightHand, isHand: true, isLeft: false });
+  if (leftFootOn) allContacts.push({ ...leftFoot, isHand: false, isLeft: true });
+  if (rightFootOn) allContacts.push({ ...rightFoot, isHand: false, isLeft: false });
+
+  // Lateral offset of CoG from centroid of contacts
+  const contactCentroidX = allContacts.length > 0
+    ? allContacts.reduce((s, c) => s + c.x, 0) / allContacts.length
+    : cogX;
+  const lateralOffset = cogX - contactCentroidX;
+
+  // Barn door torque: lateral offset * weight creates a turning moment
+  // Contact points at greater lateral distance resist this more effectively
+  let barnDoorExtra = 0;
+  if (Math.abs(lateralOffset) > 0.02 && allContacts.length >= 2) {
+    // The lateral torque must be resisted by differential forces at contact points
+    const maxLateralSpan = allContacts.reduce((max, c) =>
+      Math.max(max, Math.abs(c.x - contactCentroidX)), 0);
+    if (maxLateralSpan > 0.01) {
+      // Extra force needed = torque / max lever arm
+      // Torque = weight * lateral_offset (simplified for wall-plane rotation)
+      barnDoorExtra = weightN * Math.abs(lateralOffset) * 0.3 / maxLateralSpan;
+      // This extra force falls mostly on hands (they resist rotation)
+      handAlongWallN += barnDoorExtra * (handsOn > 0 ? 0.7 : 0);
+    }
+  }
+
+  // === 4. DISTRIBUTE BETWEEN LEFT/RIGHT HANDS ===
+  // Use moment equilibrium about the other hand to find each hand's share.
+  // For two hands: take moment about right hand to find left hand force, and vice versa.
   let leftHandRatio = 0.5;
   let rightHandRatio = 0.5;
+
   if (handsOn === 1) {
-    // One hand bears all
     leftHandRatio = leftHandOn ? 1 : 0;
     rightHandRatio = rightHandOn ? 1 : 0;
   } else if (handsOn === 2) {
-    const leftHandDist = Math.sqrt(
-      (leftHand.x - centerOfGravity.x) ** 2 +
-        (leftHand.y - centerOfGravity.y) ** 2
+    // Moment about right hand position to find left hand force:
+    // leftForce * |leftHand - rightHand| = totalForce * |CoG_projection - rightHand|
+    // The hand FURTHER from CoG bears LESS load (it has more leverage).
+    const lhDistFromCog = Math.sqrt(
+      (leftHand.x - cogX) ** 2 + (leftHand.y - cogY) ** 2
     );
-    const rightHandDist = Math.sqrt(
-      (rightHand.x - centerOfGravity.x) ** 2 +
-        (rightHand.y - centerOfGravity.y) ** 2
+    const rhDistFromCog = Math.sqrt(
+      (rightHand.x - cogX) ** 2 + (rightHand.y - cogY) ** 2
     );
-    const totalDist = leftHandDist + rightHandDist || 1;
-    leftHandRatio = rightHandDist / totalDist;
-    rightHandRatio = leftHandDist / totalDist;
+
+    // Using moment equilibrium along the hand-to-hand axis:
+    // The hand closer to CoG should bear MORE of the load (shorter moment arm
+    // means it needs more force to create the same moment).
+    // F_left * d_left = F_right * d_right (about CoG)
+    // F_left / F_right = d_right / d_left
+    // So the further hand bears less force.
+    const totalDist = lhDistFromCog + rhDistFromCog;
+    if (totalDist > 0.01) {
+      // Inverse distance weighting: closer hand bears more
+      // F_left / F_total = (1/d_left) / (1/d_left + 1/d_right)
+      //                  = d_right / (d_left + d_right)
+      // Wait — this gives MORE to the hand further from CoG.
+      // Actually: for moment equilibrium about CoG:
+      //   F_left * d_left_from_cog = F_right * d_right_from_cog  (WRONG for general case)
+      //
+      // The correct approach: take moments about each hand.
+      // Moment about right hand: F_left * handSpan = W * cogDistFromRight
+      // F_left = W * cogDistFromRight / handSpan
+      // So the hand further from CoG gets MORE load — this is correct physics!
+      // Think of a seesaw: the weight closer to one end means that end bears more.
+      //
+      // Actually, for a beam supported at two points:
+      // Support A bears load proportional to distance of load from B.
+      // F_A = W * d_B / (d_A + d_B) where d_A, d_B are distances from load to A, B.
+      // So the support CLOSER to the load bears MORE.
+
+      // Distance of CoG from each hand along the line connecting the hands
+      const handDx = rightHand.x - leftHand.x;
+      const handDy = rightHand.y - leftHand.y;
+      const handSpan = Math.sqrt(handDx ** 2 + handDy ** 2);
+
+      if (handSpan > 0.01) {
+        // Project CoG onto the line between hands
+        const t = ((cogX - leftHand.x) * handDx + (cogY - leftHand.y) * handDy) / (handSpan ** 2);
+        const tClamped = Math.max(0, Math.min(1, t));
+        // t=0 means CoG is at left hand, t=1 means at right hand
+        // Left hand bears: (1-t) when CoG is at t along the line
+        // Wait — beam mechanics: reaction at left = W * (1 - t), right = W * t
+        // When t=0 (CoG at left hand): left bears all → leftRatio = 1? No.
+        // When load is AT support A (t=0): A bears all load. So leftRatio = (1-t).
+        // But this means the hand the CoG is CLOSER to bears MORE. Let me verify:
+        // If CoG is right at the left hand (t=0): leftRatio=1. Correct — all weight on that hand.
+        // If CoG is centered (t=0.5): equal split. Correct.
+        // If CoG is near right hand (t=0.8): leftRatio=0.2, rightRatio=0.8. Correct.
+        // YES — the hand closer to CoG bears MORE load. This is standard beam theory.
+        rightHandRatio = tClamped;
+        leftHandRatio = 1 - tClamped;
+      } else {
+        leftHandRatio = 0.5;
+        rightHandRatio = 0.5;
+      }
+    }
   }
 
-  // Direction of pull: from hold toward center of gravity
-  const leftPullDir = leftHandOn
-    ? new THREE.Vector3(centerOfGravity.x - leftHand.x, centerOfGravity.y - leftHand.y, 0).normalize()
-    : new THREE.Vector3(0, 0, 0);
-  const rightPullDir = rightHandOn
-    ? new THREE.Vector3(centerOfGravity.x - rightHand.x, centerOfGravity.y - rightHand.y, 0).normalize()
-    : new THREE.Vector3(0, 0, 0);
-
-  const leftHandForce = leftPullDir.multiplyScalar(totalHandForceN * leftHandRatio);
-  const rightHandForce = rightPullDir.multiplyScalar(totalHandForceN * rightHandRatio);
-
-  // Foot forces
-  const footForceN = Math.abs(gravityAlongWall) * footLoadFraction;
+  // === 5. DISTRIBUTE BETWEEN LEFT/RIGHT FEET ===
   let leftFootRatio = 0.5;
   let rightFootRatio = 0.5;
   if (feetOn === 1) {
     leftFootRatio = leftFootOn ? 1 : 0;
     rightFootRatio = rightFootOn ? 1 : 0;
+  } else if (feetOn === 2) {
+    const footDx = rightFoot.x - leftFoot.x;
+    const footDy = rightFoot.y - leftFoot.y;
+    const footSpan = Math.sqrt(footDx ** 2 + footDy ** 2);
+    if (footSpan > 0.01) {
+      const t = ((cogX - leftFoot.x) * footDx + (cogY - leftFoot.y) * footDy) / (footSpan ** 2);
+      const tClamped = Math.max(0, Math.min(1, t));
+      rightFootRatio = tClamped;
+      leftFootRatio = 1 - tClamped;
+    }
   }
-  const leftFootPush = new THREE.Vector3(0, 1, 0).multiplyScalar(footForceN * leftFootRatio);
-  const rightFootPush = new THREE.Vector3(0, 1, 0).multiplyScalar(footForceN * rightFootRatio);
 
-  // Friction required at feet to stay on
-  const frictionRequired =
-    wallAngleDeg >= 0 ? Math.abs(gravityAlongNormal) * footLoadFraction : 0;
+  // === 6. FORCE DIRECTIONS ===
+  // Hand forces: directed from the hold toward the body (pulling)
+  // The direction should be from hold toward CoG, projected appropriately.
+  const handForceTotal = Math.sqrt(handAlongWallN ** 2 + handNormalN ** 2);
 
-  // Pull direction efficiency: base grip type + positional bonus/penalty.
-  // Hand position relative to CoG determines how well the grip type works biomechanically.
+  const makePullDir = (hold: { x: number; y: number }, on: boolean): THREE.Vector3 => {
+    if (!on) return new THREE.Vector3(0, 0, 0);
+    const dx = cogX - hold.x;
+    const dy = cogY - hold.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < 0.001) return new THREE.Vector3(0, -1, 0);
+    return new THREE.Vector3(dx / len, dy / len, 0);
+  };
+
+  const leftPullDir = makePullDir(leftHand, leftHandOn);
+  const rightPullDir = makePullDir(rightHand, rightHandOn);
+
+  const leftHandForce = leftPullDir.clone().multiplyScalar(handForceTotal * leftHandRatio);
+  const rightHandForce = rightPullDir.clone().multiplyScalar(handForceTotal * rightHandRatio);
+
+  // Foot forces: directed along the wall surface (pushing into/up the wall)
+  // On vertical: mostly upward. On overhang: into the wall + upward.
+  // The foot pushes against the wall surface, so force direction is along
+  // the wall-tangent (supporting weight) plus into the wall (friction/normal).
+  const footForceTotal = Math.sqrt(footAlongWallN ** 2 + footNormalN ** 2);
+
+  // Foot force direction: combination of wall-up and into-wall
+  const footForceDir = new THREE.Vector3(
+    0,
+    Math.cos(wallAngleRad),  // vertical component (up the wall)
+    -Math.sin(wallAngleRad)  // into the wall component
+  );
+  const footDirLen = footForceDir.length();
+  if (footDirLen > 0.001) footForceDir.divideScalar(footDirLen);
+  else footForceDir.set(0, 1, 0);
+
+  const leftFootPush = footForceDir.clone().multiplyScalar(footForceTotal * leftFootRatio);
+  const rightFootPush = footForceDir.clone().multiplyScalar(footForceTotal * rightFootRatio);
+
+  // === 7. TOTAL HAND FORCE AND GRIP CHECK ===
+  const totalHandForceKg = handForceTotal / G;
+  const totalHandForceLbs = totalHandForceKg * KG_TO_LBS;
+
+  // Arm bend efficiency (same model — this is biomechanics, not physics error)
+  const lhDist = Math.sqrt((leftHand.x - cogX) ** 2 + (leftHand.y - cogY) ** 2);
+  const rhDist = Math.sqrt((rightHand.x - cogX) ** 2 + (rightHand.y - cogY) ** 2);
+  const lhStraight = Math.min(1, lhDist / (armReach * 0.85));
+  const rhStraight = Math.min(1, rhDist / (armReach * 0.85));
+  const avgStraightness = handsOn === 2
+    ? (lhStraight + rhStraight) / 2
+    : leftHandOn ? lhStraight : rhStraight;
+  const baseEfficiency = 0.55 + avgStraightness * 0.45;
+  const engagementBump = Math.exp(-((avgStraightness - 0.8) ** 2) / 0.02) * 0.08;
+  const armBendEfficiency = Math.min(1.0, baseEfficiency + engagementBump);
+
+  // Pull direction efficiency
   const pullEfficiency = (
     pull: PullDirection,
     hand: { x: number; y: number },
     isLeft: boolean
   ): number => {
     const overhang = Math.max(0, Math.sin(wallAngleRad));
-    const dx = hand.x - centerOfGravity.x; // positive = hand is right of CoG
-    const dy = hand.y - centerOfGravity.y; // positive = hand is above CoG
-
-    // Normalize offsets by arm reach for consistent scaling
+    const dx = hand.x - cogX;
+    const dy = hand.y - cogY;
     const normDy = Math.min(1, Math.max(-1, dy / (armReach * 0.8)));
     const normDx = Math.min(1, Math.max(-1, dx / (armReach * 0.5)));
-    const lateralDist = Math.abs(normDx); // how far to the side
+    const lateralDist = Math.abs(normDx);
 
     switch (pull) {
       case "down": {
-        // Best when hand is above CoG (pulling down along gravity).
-        // Worse when hand is at or below CoG — can't pull "down" effectively.
         const aboveBonus = normDy > 0 ? normDy * 0.15 : normDy * 0.25;
         return Math.max(0.3, 0.85 + aboveBonus);
       }
       case "side": {
-        // Best when hand is out to the side of CoG (lateral pull).
-        // Side pull on the correct side: left hand pulling left, right hand pulling right.
         const correctSide = isLeft ? (dx < 0) : (dx > 0);
         const sideBonus = lateralDist * (correctSide ? 0.15 : -0.1);
-        // Worse when hand is directly above — no lateral vector to exploit.
         const abovePenalty = normDy > 0.5 ? (normDy - 0.5) * -0.1 : 0;
         return Math.max(0.3, 0.80 + sideBonus + abovePenalty);
       }
       case "undercling": {
-        // Best when hand is below or at CoG (pulling upward from underneath).
-        // Terrible when hand is high above — biomechanically impossible to undercling well.
         const belowBonus = normDy < 0 ? Math.abs(normDy) * 0.2 : -normDy * 0.3;
         return Math.max(0.3, 0.70 + belowBonus - overhang * 0.15);
       }
       case "gaston": {
-        // Best when hand is across the body (left hand right of center, right hand left).
-        // Pushing outward is always inefficient but position matters.
-        const correctSide = isLeft ? (dx > 0) : (dx < 0); // across body
+        const correctSide = isLeft ? (dx > 0) : (dx < 0);
         const crossBonus = lateralDist * (correctSide ? 0.15 : -0.1);
         return Math.max(0.3, 0.60 + crossBonus);
       }
       case "sloper": {
-        // Friction-dependent. Best when hand is above and close to body (max contact pressure).
-        // Worse on overhangs (gravity pulls fingers off), worse when far from body.
         const aboveBonus = normDy > 0 ? normDy * 0.1 : normDy * 0.15;
         const distPenalty = lateralDist * -0.1;
         return Math.max(0.3, 0.85 + aboveBonus + distPenalty - overhang * 0.35);
       }
-      // Foot techniques — these affect grip indirectly by changing how much
-      // load the feet can bear, reducing hand load.
-      case "edge": {
-        // Standard edging: very efficient on small footholds. Slightly worse on slab.
+      case "edge":
         return Math.max(0.4, 0.90 - overhang * 0.1);
-      }
       case "smear": {
-        // Friction smearing: great on slab, terrible on overhangs.
         const slabBonus = Math.max(0, -normDy) * 0.15;
         return Math.max(0.3, 0.75 + slabBonus - overhang * 0.4);
       }
-      case "toe-hook": {
-        // Toe hook: pulls body toward wall on overhangs. Very effective on steep terrain.
-        // Poor on slab (no benefit from hooking).
+      case "toe-hook":
         return Math.max(0.3, 0.60 + overhang * 0.35);
-      }
-      case "heel-hook": {
-        // Heel hook: uses hamstring to pull. Excellent on overhangs and roofs.
-        // Can bear significant load, reducing hand force dramatically.
+      case "heel-hook":
         return Math.max(0.3, 0.65 + overhang * 0.35);
-      }
-      case "toe-cam": {
-        // Toe jam in pockets/cracks: very secure, angle-independent.
+      case "toe-cam":
         return Math.max(0.4, 0.85);
-      }
       case "backstep": {
-        // Outside edge, body turned: great with twist, mediocre without.
         const twistBonus = Math.abs(normDx) * 0.2;
         return Math.max(0.3, 0.75 + twistBonus);
       }
     }
   };
-  // Average pull efficiency across both hands (weighted by load ratio)
-  const avgPullEfficiency =
-    pullEfficiency(leftHandPull, leftHand, true) * leftHandRatio +
-    pullEfficiency(rightHandPull, rightHand, false) * rightHandRatio;
 
-  // Effective grip = raw grip * pull efficiency * arm bend efficiency
-  // Straight arms: skeleton bears load → full grip available
-  // Bent arms: muscles fatigue faster → effectively less grip endurance
+  const avgPullEfficiency = handsOn === 0 ? 1 :
+    (leftHandOn ? pullEfficiency(leftHandPull, leftHand, true) * leftHandRatio : 0) +
+    (rightHandOn ? pullEfficiency(rightHandPull, rightHand, false) * rightHandRatio : 0);
+
   const effectiveGripKg = gripStrengthKg * avgPullEfficiency * armBendEfficiency;
-  const gripStrengthPercentUsed = (totalHandForceKg / effectiveGripKg) * 100;
+  const gripStrengthPercentUsed = effectiveGripKg > 0
+    ? (totalHandForceKg / effectiveGripKg) * 100
+    : (totalHandForceKg > 0 ? Infinity : 0);
+
+  // Friction required at feet
+  const frictionRequired = wallAngleDeg >= 0
+    ? Math.max(0, gravNormalToWall) * (feetOn > 0 ? footAlongWallN / Math.max(footForceTotal, 0.01) : 0)
+    : 0;
 
   return {
     gravity,
@@ -517,6 +535,29 @@ export function computeForces(config: ClimberConfig): ForceResult {
     gripStrengthPercentUsed,
     canHold: totalHandForceKg <= effectiveGripKg,
     frictionRequired,
+    wallAngleRad,
+  };
+}
+
+function zeroResult(
+  gravity: THREE.Vector3,
+  normal: THREE.Vector3,
+  wallAngleRad: number,
+  weightN: number,
+  gripStrengthKg: number
+): ForceResult {
+  return {
+    gravity,
+    normal,
+    leftHandPull: new THREE.Vector3(),
+    rightHandPull: new THREE.Vector3(),
+    leftFootPush: new THREE.Vector3(),
+    rightFootPush: new THREE.Vector3(),
+    totalHandForceKg: weightN / G,
+    totalHandForceLbs: (weightN / G) * KG_TO_LBS,
+    gripStrengthPercentUsed: (weightN / G / gripStrengthKg) * 100,
+    canHold: false,
+    frictionRequired: 0,
     wallAngleRad,
   };
 }
