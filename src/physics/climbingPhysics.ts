@@ -26,6 +26,8 @@ export interface ClimberConfig {
   wallAngleDeg: number; // 0 = vertical, positive = overhang, negative = slab
   leftHandPull: PullDirection;
   rightHandPull: PullDirection;
+  leftFootPull: PullDirection;
+  rightFootPull: PullDirection;
   // Knee turn: which direction the knee points.
   // 0 = neutral (outward from wall), negative = inward (drop knee), positive = outward (frog)
   leftKneeTurnDeg: number;

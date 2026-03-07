@@ -920,6 +920,7 @@ function App() {
           heightFt: s.heightFt, apeIndexIn: s.apeIndexIn,
           bodyRotationDeg: s.bodyRotationDeg, wallAngleDeg: s.wallAngleDeg,
           leftHandPull: s.leftHandPull, rightHandPull: s.rightHandPull,
+          leftFootPull: s.leftFootPull, rightFootPull: s.rightFootPull,
           leftKneeTurnDeg: s.leftKneeTurnDeg, rightKneeTurnDeg: s.rightKneeTurnDeg,
           hipOffset: s.hipOffset, torsoOffset: s.torsoOffset,
           leftHandOn: s.leftHandOn, rightHandOn: s.rightHandOn,
@@ -937,10 +938,31 @@ function App() {
 
       setState((prev) => {
         const arcTorsoBonus = isHand ? limbArcOffset * 0.15 : 0;
+
+        // Weight shift anticipation: before a hand move, lean opposite
+        // to load the standing foot and coil for the reach.
+        let anticipationTwist = 0;
+        let anticipationHipShift = 0;
+        if (!m.isSetup && isHand && rawT < 0.15) {
+          const antiT = easeInOut(rawT / 0.15); // 0→1 during wind-up
+          const reachDir = toX - fromX; // positive = reaching right
+          // Counter-rotate: lean opposite to reach direction
+          anticipationTwist = -reachDir * 25 * antiT;
+          // Shift hips toward the standing foot (opposite side of reach)
+          anticipationHipShift = -reachDir * 0.08 * antiT;
+        }
+
+        const targetTwist = rawT < 0.15
+          ? snap.bodyRotationDeg + anticipationTwist
+          : m.bodyTwist;
+
         return {
           ...prev,
-          [kx]: currentLimbX, [ky]: currentLimbY,
-          bodyRotationDeg: lerp(snap.bodyRotationDeg, m.bodyTwist, bodyT),
+          [kx]: currentLimbX + anticipationHipShift,
+          [ky]: currentLimbY,
+          bodyRotationDeg: rawT < 0.15
+            ? targetTwist
+            : lerp(snap.bodyRotationDeg, m.bodyTwist, bodyT),
           hipOffset: Math.min(1, lerp(snap.hipOffset, m.hipOffset, bodyT)),
           torsoOffset: Math.min(1, lerp(snap.torsoOffset, m.torsoOffset, bodyT) + arcTorsoBonus),
           leftKneeTurnDeg: lerp(snap.leftKneeTurnDeg, m.leftKneeTurn, bodyT),
@@ -965,7 +987,7 @@ function App() {
     }
   }, [sittingOnGround, toppedOut, isPlaying, startSim]);
 
-  const set = useCallback((key: keyof ClimberState, value: number | string) => {
+  const set = useCallback((key: keyof ClimberState, value: number | string | boolean) => {
     setState((s) => ({ ...s, [key]: value }));
   }, []);
 
@@ -992,6 +1014,7 @@ function App() {
     heightFt: state.heightFt, apeIndexIn: state.apeIndexIn,
     bodyRotationDeg: state.bodyRotationDeg, wallAngleDeg: state.wallAngleDeg,
     leftHandPull: state.leftHandPull, rightHandPull: state.rightHandPull,
+    leftFootPull: state.leftFootPull, rightFootPull: state.rightFootPull,
     leftKneeTurnDeg: state.leftKneeTurnDeg, rightKneeTurnDeg: state.rightKneeTurnDeg,
     hipOffset: state.hipOffset, torsoOffset: state.torsoOffset,
     leftHandOn: state.leftHandOn, rightHandOn: state.rightHandOn,
@@ -1440,7 +1463,10 @@ function App() {
               {/* Limbs (collapsed sections) */}
               <div style={{ color: "#888", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>Limb Positions</div>
               <div style={{ background: "#1a1a22", borderRadius: 10, padding: 12 }}>
-                <div style={{ fontSize: 12, color: "#ff8866", fontWeight: 600, marginBottom: 4 }}>Left Hand</div>
+                <div style={{ fontSize: 12, color: "#ff8866", fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                  Left Hand
+                  <button onClick={() => set("leftHandOn", !state.leftHandOn)} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, border: "1px solid #555", background: state.leftHandOn ? "#4a4" : "#a44", color: "#fff", cursor: "pointer" }}>{state.leftHandOn ? "On" : "Off"}</button>
+                </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
                   <select value={state.leftHandPull} onChange={(e) => set("leftHandPull", e.target.value)}
                     style={{ flex: 1, background: "#333", color: "#eee", border: "1px solid #555", borderRadius: 6, padding: "6px 8px", fontSize: 13, fontFamily: "inherit" }}>
@@ -1450,7 +1476,10 @@ function App() {
                 <Slider label="X" value={state.lhX} min={-1} max={1} step={0.05} onChange={(v) => set("lhX", v)} />
                 <Slider label="Y" value={state.lhY} min={0} max={3} step={0.05} onChange={(v) => set("lhY", v)} />
 
-                <div style={{ fontSize: 12, color: "#ff8866", fontWeight: 600, margin: "8px 0 4px" }}>Right Hand</div>
+                <div style={{ fontSize: 12, color: "#ff8866", fontWeight: 600, margin: "8px 0 4px", display: "flex", alignItems: "center", gap: 6 }}>
+                  Right Hand
+                  <button onClick={() => set("rightHandOn", !state.rightHandOn)} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, border: "1px solid #555", background: state.rightHandOn ? "#4a4" : "#a44", color: "#fff", cursor: "pointer" }}>{state.rightHandOn ? "On" : "Off"}</button>
+                </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
                   <select value={state.rightHandPull} onChange={(e) => set("rightHandPull", e.target.value)}
                     style={{ flex: 1, background: "#333", color: "#eee", border: "1px solid #555", borderRadius: 6, padding: "6px 8px", fontSize: 13, fontFamily: "inherit" }}>
@@ -1460,7 +1489,10 @@ function App() {
                 <Slider label="X" value={state.rhX} min={-1} max={1} step={0.05} onChange={(v) => set("rhX", v)} />
                 <Slider label="Y" value={state.rhY} min={0} max={3} step={0.05} onChange={(v) => set("rhY", v)} />
 
-                <div style={{ fontSize: 12, color: "#6699ff", fontWeight: 600, margin: "8px 0 4px" }}>Left Foot</div>
+                <div style={{ fontSize: 12, color: "#6699ff", fontWeight: 600, margin: "8px 0 4px", display: "flex", alignItems: "center", gap: 6 }}>
+                  Left Foot
+                  <button onClick={() => set("leftFootOn", !state.leftFootOn)} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, border: "1px solid #555", background: state.leftFootOn ? "#4a4" : "#a44", color: "#fff", cursor: "pointer" }}>{state.leftFootOn ? "On" : "Off"}</button>
+                </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
                   <select value={state.leftFootPull} onChange={(e) => set("leftFootPull", e.target.value)}
                     style={{ flex: 1, background: "#333", color: "#eee", border: "1px solid #555", borderRadius: 6, padding: "6px 8px", fontSize: 13, fontFamily: "inherit" }}>
@@ -1471,7 +1503,10 @@ function App() {
                 <Slider label="Y" value={state.lfY} min={0} max={2} step={0.05} onChange={(v) => set("lfY", v)} />
                 <Slider label="Knee" value={state.leftKneeTurnDeg} min={-90} max={90} step={1} onChange={(v) => set("leftKneeTurnDeg", v)} suffix="\u00b0" />
 
-                <div style={{ fontSize: 12, color: "#6699ff", fontWeight: 600, margin: "8px 0 4px" }}>Right Foot</div>
+                <div style={{ fontSize: 12, color: "#6699ff", fontWeight: 600, margin: "8px 0 4px", display: "flex", alignItems: "center", gap: 6 }}>
+                  Right Foot
+                  <button onClick={() => set("rightFootOn", !state.rightFootOn)} style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, border: "1px solid #555", background: state.rightFootOn ? "#4a4" : "#a44", color: "#fff", cursor: "pointer" }}>{state.rightFootOn ? "On" : "Off"}</button>
+                </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
                   <select value={state.rightFootPull} onChange={(e) => set("rightFootPull", e.target.value)}
                     style={{ flex: 1, background: "#333", color: "#eee", border: "1px solid #555", borderRadius: 6, padding: "6px 8px", fontSize: 13, fontFamily: "inherit" }}>

@@ -2,7 +2,7 @@ import { useMemo, useCallback, useRef } from "react";
 import { Canvas, ThreeEvent, useFrame } from "@react-three/fiber";
 import { OrbitControls, Line, Sky, Text } from "@react-three/drei";
 import * as THREE from "three";
-import { ClimberConfig, ForceResult, computeForces } from "../physics/climbingPhysics";
+import { ClimberConfig, ForceResult, computeForces, PullDirection } from "../physics/climbingPhysics";
 import { PlacedHold, HoldDirection, HOLD_INFO } from "../holds/holdTypes";
 
 const FORCE_SCALE = 0.003;
@@ -384,6 +384,144 @@ function Wall({ segments, onWallClick, placingMode }: {
   );
 }
 
+// Hand component — fingers curl differently per grip type
+function Hand({ pos, wrist, pull, on, s, skinColor, side }: {
+  pos: V3; wrist: V3; pull: PullDirection; on: boolean; s: number; skinColor: string; side: number;
+}) {
+  const handSize = 0.016 * s;
+  if (!on) {
+    // Dangling: relaxed open hand
+    return <Joint position={pos} size={handSize} color={skinColor} />;
+  }
+
+  const toWrist = v3normalize(v3sub(wrist, pos));
+  const up = new THREE.Vector3(0, 1, 0);
+  const dir = new THREE.Vector3(...toWrist);
+  const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
+
+  const fingerLen = 0.022 * s;
+  const fingerW = 0.004 * s;
+
+  // Finger curl angle based on grip type
+  let curlAngle = 0.3; // default slight curl
+  let spreadAngle = 0.08;
+  let thumbOut = true;
+  switch (pull) {
+    case "down": // crimp/jug: fingers tightly curled, thumb locked over
+      curlAngle = 1.2;
+      spreadAngle = 0.02;
+      break;
+    case "sloper": // open hand draped over
+      curlAngle = 0.4;
+      spreadAngle = 0.15;
+      break;
+    case "side": // pinch/sidepull
+    case "gaston":
+      curlAngle = 0.8;
+      spreadAngle = 0.05;
+      thumbOut = true;
+      break;
+    case "undercling":
+      curlAngle = 1.0;
+      spreadAngle = 0.03;
+      break;
+    default:
+      curlAngle = 0.6;
+      spreadAngle = 0.08;
+      break;
+  }
+
+  return (
+    <group position={pos} quaternion={quat}>
+      {/* Palm */}
+      <mesh>
+        <boxGeometry args={[handSize * 1.6, handSize * 0.5, handSize * 1.2]} />
+        <meshStandardMaterial color={skinColor} roughness={0.7} />
+      </mesh>
+      {/* Four fingers */}
+      {[-1.5, -0.5, 0.5, 1.5].map((offset, i) => (
+        <group key={i} position={[offset * fingerW, -handSize * 0.25, 0]}
+          rotation={[0, 0, offset * spreadAngle * side]}>
+          {/* Proximal */}
+          <mesh position={[0, -fingerLen * 0.4, 0]} rotation={[curlAngle * 0.5, 0, 0]}>
+            <boxGeometry args={[fingerW, fingerLen * 0.45, fingerW]} />
+            <meshStandardMaterial color={skinColor} roughness={0.7} />
+            {/* Distal — curls further */}
+            <mesh position={[0, -fingerLen * 0.35, 0]} rotation={[curlAngle * 0.7, 0, 0]}>
+              <boxGeometry args={[fingerW * 0.85, fingerLen * 0.35, fingerW * 0.85]} />
+              <meshStandardMaterial color={skinColor} roughness={0.7} />
+            </mesh>
+          </mesh>
+        </group>
+      ))}
+      {/* Thumb */}
+      {thumbOut && (
+        <mesh position={[side * handSize * 0.9, -handSize * 0.1, 0]}
+          rotation={[curlAngle * 0.3, 0, side * -0.6]}>
+          <boxGeometry args={[fingerW * 1.2, fingerLen * 0.5, fingerW * 1.2]} />
+          <meshStandardMaterial color={skinColor} roughness={0.7} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+// Climbing foot — rotates for heel hooks, toe hooks, smears, edging
+function ClimbingFoot({ pos, ankle, pull, on, s, footHeight: fh }: {
+  pos: V3; ankle: V3; pull: PullDirection; on: boolean; s: number; footHeight: number;
+}) {
+  const shoeColor = "#334455";
+  const rubberColor = "#1a1a1a";
+  const shoeW = 0.035 * s;
+  const shoeL = 0.07 * s;
+
+  if (!on) {
+    // Dangling: shoe pointing down
+    return (
+      <mesh position={pos}>
+        <boxGeometry args={[shoeW, fh, shoeL]} />
+        <meshStandardMaterial color={shoeColor} roughness={0.8} />
+      </mesh>
+    );
+  }
+
+  // Compute orientation from ankle to foot
+  const toAnkle = v3normalize(v3sub(ankle, pos));
+  const up = new THREE.Vector3(0, 1, 0);
+  const dir = new THREE.Vector3(...toAnkle);
+  const quat = new THREE.Quaternion().setFromUnitVectors(up, dir);
+
+  // Foot rotation adjustments based on technique
+  const isHeel = pull === "heel-hook";
+  const isToe = pull === "toe-hook" || pull === "toe-cam";
+
+  return (
+    <group position={pos} quaternion={quat}>
+      {/* Rotate the shoe within the group for hooks */}
+      <group rotation={[
+        isHeel ? Math.PI * 0.6 : isToe ? -Math.PI * 0.35 : 0,
+        0, 0
+      ]}>
+        {/* Main shoe body */}
+        <mesh position={[0, fh * 0.3, isHeel ? -shoeL * 0.15 : shoeL * 0.1]}>
+          <boxGeometry args={[shoeW, fh * 0.7, shoeL * 0.9]} />
+          <meshStandardMaterial color={shoeColor} roughness={0.8} />
+        </mesh>
+        {/* Rubber toe rand — pronounced for toe hooks */}
+        <mesh position={[0, fh * 0.05, shoeL * 0.45]}>
+          <boxGeometry args={[shoeW * 1.05, fh * 0.35, shoeL * 0.2]} />
+          <meshStandardMaterial color={rubberColor} roughness={0.95} />
+        </mesh>
+        {/* Heel rubber — pronounced for heel hooks */}
+        <mesh position={[0, fh * 0.1, -shoeL * 0.35]}>
+          <boxGeometry args={[shoeW * 0.95, fh * 0.5, shoeL * 0.2]} />
+          <meshStandardMaterial color={isHeel ? "#cc3333" : rubberColor} roughness={0.95} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
 function Climber({ config, forces, segments }: { config: ClimberConfig; forces: ForceResult; segments?: WallSegment[] }) {
   const angleRad = forces.wallAngleRad;
   const s = config.heightFt / 5.75;
@@ -394,53 +532,117 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
   const wallUp: V3 = [0, Math.cos(angleRad), Math.sin(angleRad)];
   const wallNorm: V3 = [0, -Math.sin(angleRad), Math.cos(angleRad)];
 
-  // Get wall basis vectors at a specific height along the wall (segment-aware)
-  const wallBasisAtHeight = (h: number): { up: V3; norm: V3 } => {
-    if (!segments || segments.length <= 1) {
-      return { up: wallUp, norm: wallNorm };
-    }
-    let remaining = h;
-    for (const seg of segments) {
-      if (remaining <= seg.height) {
-        const ar = (seg.angleDeg * Math.PI) / 180;
-        return {
-          up: [0, Math.cos(ar), Math.sin(ar)],
-          norm: [0, -Math.sin(ar), Math.cos(ar)],
-        };
-      }
-      remaining -= seg.height;
-    }
-    const last = segments[segments.length - 1];
-    const ar = (last.angleDeg * Math.PI) / 180;
-    return {
-      up: [0, Math.cos(ar), Math.sin(ar)],
-      norm: [0, -Math.sin(ar), Math.cos(ar)],
-    };
-  };
-
   // Place a point on the wall surface (x=lateral, h=height along wall, d=offset along normal)
+  // Smooth transition radius: blend angles over this distance near segment joints
+  const BLEND_R = 0.25;
+
   const toWorld = (x: number, h: number, d: number): V3 => {
     if (!segments || segments.length <= 1) {
       return [x, h * wallUp[1] + d * wallNorm[1], h * wallUp[2] + d * wallNorm[2]];
     }
-    // Multi-segment: find correct segment for this height
-    let curWorldY = 0, curWorldZ = 0, remaining = h;
-    for (const seg of segments) {
-      const ar = (seg.angleDeg * Math.PI) / 180;
-      const su: V3 = [0, Math.cos(ar), Math.sin(ar)];
-      const sn: V3 = [0, -Math.sin(ar), Math.cos(ar)];
-      if (remaining <= seg.height) {
-        return [x, curWorldY + remaining * su[1] + d * sn[1], curWorldZ + remaining * su[2] + d * sn[2]];
-      }
-      curWorldY += seg.height * su[1];
-      curWorldZ += seg.height * su[2];
-      remaining -= seg.height;
+
+    // Build cumulative heights for segment boundaries
+    const cumH: number[] = [0];
+    for (const seg of segments) cumH.push(cumH[cumH.length - 1] + seg.height);
+    const totalH = cumH[cumH.length - 1];
+    const clampedH = Math.max(0, Math.min(totalH, h));
+
+    // Find which segment this height falls in
+    let segIdx = 0;
+    for (let i = 0; i < segments.length; i++) {
+      if (clampedH <= cumH[i + 1]) { segIdx = i; break; }
     }
-    const last = segments[segments.length - 1];
-    const ar = (last.angleDeg * Math.PI) / 180;
-    const su: V3 = [0, Math.cos(ar), Math.sin(ar)];
-    const sn: V3 = [0, -Math.sin(ar), Math.cos(ar)];
-    return [x, curWorldY + remaining * su[1] + d * sn[1], curWorldZ + remaining * su[2] + d * sn[2]];
+
+    // Check if we're near a segment boundary and should blend
+    const segStart = cumH[segIdx];
+    const segEnd = cumH[segIdx + 1];
+    const distFromStart = clampedH - segStart;
+    const distFromEnd = segEnd - clampedH;
+
+    // Compute blended angle at this height
+    let blendedAngleRad: number;
+    const thisAngle = (segments[segIdx].angleDeg * Math.PI) / 180;
+
+    if (segIdx > 0 && distFromStart < BLEND_R) {
+      // Near bottom boundary: blend with previous segment
+      const prevAngle = (segments[segIdx - 1].angleDeg * Math.PI) / 180;
+      const t = distFromStart / BLEND_R;
+      const smooth = t * t * (3 - 2 * t); // smoothstep
+      blendedAngleRad = prevAngle + (thisAngle - prevAngle) * smooth;
+    } else if (segIdx < segments.length - 1 && distFromEnd < BLEND_R) {
+      // Near top boundary: blend with next segment
+      const nextAngle = (segments[segIdx + 1].angleDeg * Math.PI) / 180;
+      const t = distFromEnd / BLEND_R;
+      const smooth = t * t * (3 - 2 * t); // smoothstep
+      blendedAngleRad = nextAngle + (thisAngle - nextAngle) * smooth;
+    } else {
+      blendedAngleRad = thisAngle;
+    }
+
+    // Integrate position by walking up the wall with blended angles.
+    // For efficiency, use the sharp segments up to the blend zone,
+    // then the blended angle for the final portion.
+    let curY = 0, curZ = 0, walked = 0;
+
+    // Walk full segments below this height
+    for (let i = 0; i < segIdx; i++) {
+      const ar = (segments[i].angleDeg * Math.PI) / 180;
+      curY += segments[i].height * Math.cos(ar);
+      curZ += segments[i].height * Math.sin(ar);
+      walked += segments[i].height;
+    }
+
+    // Walk the remaining distance in this segment up to h using blended angle
+    // For the non-blended portion, use the segment's angle
+    const remaining = clampedH - walked;
+    const nonBlend = Math.max(0, remaining - (distFromStart < BLEND_R ? remaining : (distFromEnd < BLEND_R ? distFromEnd : 0)));
+
+    if (distFromStart < BLEND_R && segIdx > 0) {
+      // Entire remaining is in blend zone, integrate with blended angle
+      // Use midpoint angle approximation for smooth curve
+      const prevAngle = (segments[segIdx - 1].angleDeg * Math.PI) / 180;
+      const steps = 8;
+      const stepH = remaining / steps;
+      for (let j = 0; j < steps; j++) {
+        const frac = (j + 0.5) * stepH / BLEND_R;
+        const sm = Math.min(1, frac * frac * (3 - 2 * frac));
+        const a = prevAngle + (thisAngle - prevAngle) * sm;
+        curY += stepH * Math.cos(a);
+        curZ += stepH * Math.sin(a);
+      }
+    } else if (distFromEnd < BLEND_R && segIdx < segments.length - 1) {
+      // Walk non-blend portion with segment angle, then blend
+      const blendDist = remaining - nonBlend;
+      curY += nonBlend * Math.cos(thisAngle);
+      curZ += nonBlend * Math.sin(thisAngle);
+      // Integrate blend zone
+      const nextAngle = (segments[segIdx + 1].angleDeg * Math.PI) / 180;
+      const steps = 8;
+      const stepH = blendDist / steps;
+      for (let j = 0; j < steps; j++) {
+        const distToEnd = blendDist - (j + 0.5) * stepH;
+        const frac = distToEnd / BLEND_R;
+        const sm = Math.min(1, frac * frac * (3 - 2 * frac));
+        const a = nextAngle + (thisAngle - nextAngle) * sm;
+        curY += stepH * Math.cos(a);
+        curZ += stepH * Math.sin(a);
+      }
+    } else {
+      curY += remaining * Math.cos(thisAngle);
+      curZ += remaining * Math.sin(thisAngle);
+    }
+
+    // Handle height beyond last segment
+    if (h > totalH) {
+      const lastAr = (segments[segments.length - 1].angleDeg * Math.PI) / 180;
+      const extra = h - totalH;
+      curY += extra * Math.cos(lastAr);
+      curZ += extra * Math.sin(lastAr);
+    }
+
+    // Apply normal offset using blended angle
+    const sn: V3 = [0, -Math.sin(blendedAngleRad), Math.cos(blendedAngleRad)];
+    return [x, curY + d * sn[1], curZ + d * sn[2]];
   };
 
   // Holds ON the wall
@@ -488,8 +690,20 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
     dx * sin + dh * cos,
   ];
 
-  // Hips press into the wall as they twist
-  const hipNormalOff = bodyOff * Math.cos(absTwist);
+  // On overhangs, hips press tight to the wall to reduce moment arm.
+  // Compute the wall angle at the CoG height to adapt automatically.
+  const cogAngleDeg = (() => {
+    if (!segments || segments.length <= 1) return config.wallAngleDeg;
+    let remaining = config.centerOfGravity.y;
+    for (const seg of segments) {
+      if (remaining <= seg.height) return seg.angleDeg;
+      remaining -= seg.height;
+    }
+    return segments[segments.length - 1].angleDeg;
+  })();
+  const steepnessFactor = Math.max(0, Math.sin((cogAngleDeg * Math.PI) / 180)); // 0=vert, 1=roof
+  const hipPushIn = 1 - steepnessFactor * 0.85; // on roof, reduce hip offset to ~15%
+  const hipNormalOff = bodyOff * Math.cos(absTwist) * hipPushIn;
 
   // Chest/shoulders stay mostly out — only follow ~20% of the hip twist
   const partialTwist = twistRad * 0.45;
@@ -528,36 +742,84 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
   const armReach = upperArm + forearm + handLen;
   const legReach = thigh + shin + footHeight;
 
+  // Auto-detach hands that are too far to reach
+  const leftHandOn = config.leftHandOn && v3len(v3sub(lh, shoulderL)) < armReach * 1.5;
+  const rightHandOn = config.rightHandOn && v3len(v3sub(rh, shoulderR)) < armReach * 1.5;
+
+  // Smear: when a foot can't reach its hold, find the nearest wall surface
+  // point within leg reach. Climbers smear (press shoe flat on wall) rather
+  // than letting a foot dangle.
+  const findSmearPoint = (hip: V3, footTarget: V3): V3 => {
+    const dist = v3len(v3sub(footTarget, hip));
+    if (dist <= legReach) return footTarget; // can reach the hold, no smear needed
+
+    // Search for the best wall point within leg reach.
+    // Sample wall heights below the hip and find the closest reachable point.
+    const totalH = segments
+      ? segments.reduce((sum, seg) => sum + seg.height, 0)
+      : 4;
+    // Try wall heights from hip level downward to ground
+    const hipWallH = config.centerOfGravity.y; // approximate hip height in wall coords
+    let bestPoint: V3 | null = null;
+    let bestDist = Infinity;
+    const steps = 20;
+    for (let i = 0; i <= steps; i++) {
+      const h = Math.max(0, hipWallH - (i / steps) * Math.min(hipWallH, legReach * 2));
+      if (h > totalH) continue;
+      const wallPt = toWorld(footTarget[0], h, HOLD_OFFSET);
+      const d = v3len(v3sub(wallPt, hip));
+      if (d <= legReach && d < bestDist) {
+        bestDist = d;
+        bestPoint = wallPt;
+      }
+    }
+    // Also try the original target direction clamped to reach
+    if (!bestPoint) {
+      bestPoint = clampToReach(hip, footTarget, legReach);
+    }
+    return bestPoint;
+  };
+
+  // Feet always stay on wall (smear if needed)
+  const leftFootOn = config.leftFootOn;
+  const rightFootOn = config.rightFootOn;
+  const lfSmeared = config.leftFootOn ? findSmearPoint(hipL, lf) : lf;
+  const rfSmeared = config.rightFootOn ? findSmearPoint(hipR, rf) : rf;
+
   // Clamp hold targets to max reach from their joint origins.
-  // Holds render at their actual wall position, but the hand/foot
-  // endpoint is clamped so the body never stretches beyond its anatomy.
   const lhClamped = clampToReach(shoulderL, lh, armReach);
   const rhClamped = clampToReach(shoulderR, rh, armReach);
-  const lfClamped = clampToReach(hipL, lf, legReach);
-  const rfClamped = clampToReach(hipR, rf, legReach);
+  const lfClamped = clampToReach(hipL, lfSmeared, legReach);
+  const rfClamped = clampToReach(hipR, rfSmeared, legReach);
 
   // Compute elbow bend direction: anatomically, elbows are hinge joints
   // that primarily point DOWN and slightly OUT (away from body midline).
   // On steep terrain, elbows also push away from the wall.
-  const computeElbowBend = (shoulder: V3, wrist: V3, lateralSign: number, limbHeight: number): V3 => {
-    const { norm: limbNorm } = wallBasisAtHeight(limbHeight);
-    // Desired direction: blend of down + lateral splay + away from wall
+  const computeElbowBend = (shoulder: V3, wrist: V3, lateralSign: number): V3 => {
+    // Elbows bend: primarily downward (gravity), slightly outward (lateral),
+    // and away from the wall (toward viewer). Use chest position as reference
+    // for "away from wall" direction instead of wall angle.
+    const armMid: V3 = [(shoulder[0] + wrist[0]) / 2, (shoulder[1] + wrist[1]) / 2, (shoulder[2] + wrist[2]) / 2];
+    const midToBody = v3sub(chest, armMid);
+    const limbDir = v3normalize(v3sub(wrist, shoulder));
+    const along = v3dot(midToBody, limbDir);
+    let outward = v3sub(midToBody, v3scale(limbDir, along));
+    const outLen = v3len(outward);
+    if (outLen < 0.01) outward = [0, 0, 1];
+    else outward = v3scale(outward, 1 / outLen);
+
     const down: V3 = [0, -1, 0];
     const lateral: V3 = [lateralSign, 0, 0];
 
-    // Weight gravity most, then lateral splay, then wall-normal
     let desired: V3 = v3normalize(v3add(
       v3add(v3scale(down, 1.0), v3scale(lateral, 0.5)),
-      v3scale(limbNorm, 0.3)
+      v3scale(outward, 0.3)
     ));
 
-    // The IK solver removes the component along the limb axis,
-    // but if desired is nearly parallel to the limb, provide a fallback
     const forward = v3normalize(v3sub(wrist, shoulder));
     const alongLimb = Math.abs(v3dot(desired, forward));
     if (alongLimb > 0.95) {
-      // Desired is nearly parallel to arm — use wall normal + lateral as fallback
-      desired = v3normalize(v3add(v3scale(limbNorm, 0.7), v3scale(lateral, 0.3)));
+      desired = v3normalize(v3add(v3scale(outward, 0.7), v3scale(lateral, 0.3)));
     }
 
     return desired;
@@ -566,72 +828,77 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
   // Derive wrist/ankle from clamped targets.
   // Wrist is handLen back along the direction from shoulder to clamped hand.
   // Ankle is footHeight back along the direction from hip to clamped foot.
-  const wristFromClamped = (shoulder: V3, hand: V3, limbHeight: number): V3 => {
-    const { norm: limbNorm } = wallBasisAtHeight(limbHeight);
+  const wristFromClamped = (shoulder: V3, hand: V3): V3 => {
     const toHand = v3sub(hand, shoulder);
     const dist = v3len(toHand);
     if (dist < 0.001) return hand;
     const dir = v3normalize(toHand);
-    // Wrist sits handLen back from the hand, offset slightly from wall
+    // Wrist sits handLen back from the hand along the shoulder-to-hand line
     const wristDist = Math.max(0, dist - handLen);
-    const wristOnLine = v3add(shoulder, v3scale(dir, wristDist));
-    // Add a small normal offset so wrist isn't flat on wall
-    return v3add(wristOnLine, v3scale(limbNorm, chestNormalOff * 0.3));
+    return v3add(shoulder, v3scale(dir, wristDist));
   };
 
-  const ankleFromClamped = (hip: V3, foot: V3, limbHeight: number): V3 => {
-    const { norm: limbNorm } = wallBasisAtHeight(limbHeight);
+  const ankleFromClamped = (hip: V3, foot: V3): V3 => {
     const toFoot = v3sub(foot, hip);
     const dist = v3len(toFoot);
     if (dist < 0.001) return foot;
     const dir = v3normalize(toFoot);
-    // Ankle sits footHeight back from the foot, offset slightly from wall
+    // Ankle sits footHeight back from the foot along the hip-to-foot line
     const ankleDist = Math.max(0, dist - footHeight);
-    const ankleOnLine = v3add(hip, v3scale(dir, ankleDist));
-    return v3add(ankleOnLine, v3scale(limbNorm, hipNormalOff * 0.2));
+    return v3add(hip, v3scale(dir, ankleDist));
   };
 
-  const wristL = wristFromClamped(shoulderL, lhClamped, config.leftHand.y);
-  const wristR = wristFromClamped(shoulderR, rhClamped, config.rightHand.y);
-  const ankleL = ankleFromClamped(hipL, lfClamped, config.leftFoot.y);
-  const ankleR = ankleFromClamped(hipR, rfClamped, config.rightFoot.y);
+  const wristL = wristFromClamped(shoulderL, lhClamped);
+  const wristR = wristFromClamped(shoulderR, rhClamped);
+  const ankleL = ankleFromClamped(hipL, lfClamped);
+  const ankleR = ankleFromClamped(hipR, rfClamped);
 
   // Solve IK with anatomical elbow bend directions
-  const elbowBendL = computeElbowBend(shoulderL, wristL, -1, config.leftHand.y);
-  const elbowBendR = computeElbowBend(shoulderR, wristR, 1, config.rightHand.y);
+  const elbowBendL = computeElbowBend(shoulderL, wristL, -1);
+  const elbowBendR = computeElbowBend(shoulderR, wristR, 1);
   const elbowL = solveIK2Bone(shoulderL, wristL, upperArm, forearm, elbowBendL);
   const elbowR = solveIK2Bone(shoulderR, wristR, upperArm, forearm, elbowBendR);
 
-  // Knee bend direction with turn control for drop knees, flags, etc.
-  // Adapts to hip-ankle geometry: when legs are bunched (feet high),
-  // knees splay more outward. When extended, knees stay forward.
-  const computeKneeBend = (hip: V3, ankle: V3, turnDeg: number, lateralSign: number, footHeight_: number): V3 => {
-    const { up: limbUp, norm: limbNorm } = wallBasisAtHeight(footHeight_);
+  // Knee bend direction computed from actual 3D geometry.
+  // Uses the hip-ankle vector and pelvis position to determine "away from wall"
+  // direction, then blends with gravity. No wall-angle dependency.
+  const computeKneeBend = (hip: V3, ankle: V3, turnDeg: number, lateralSign: number): V3 => {
     const hipToAnkle = v3sub(ankle, hip);
     const legDist = v3len(hipToAnkle);
     const maxLeg = thigh + shin;
-    // How bunched the leg is: 0 = fully extended, 1 = very bunched
     const bunchFactor = Math.max(0, 1 - legDist / (maxLeg * 0.95));
 
-    // How much the foot is below vs at/above hip height (in wall coords)
-    // footBelow > 0 when foot is below hip (normal standing)
-    const hipH = v3dot(hip, limbUp);
-    const ankleH = v3dot(ankle, limbUp);
-    const footBelow = Math.max(0, Math.min(1, (hipH - ankleH) / (maxLeg * 0.5)));
+    // "Away from wall" = direction from wall surface toward the climber's body.
+    // Use the pelvis offset from the wall midpoint between hip and ankle.
+    const limbMid: V3 = [(hip[0] + ankle[0]) / 2, (hip[1] + ankle[1]) / 2, (hip[2] + ankle[2]) / 2];
+    // The pelvis is offset from the wall; the direction from wall to pelvis is "outward"
+    const midToBody = v3sub(pelvis, limbMid);
+    // Project out the component along the limb axis to get perpendicular "outward"
+    const limbAxis = legDist > 0.001 ? v3normalize(hipToAnkle) : [0, -1, 0] as V3;
+    const alongLimb = v3dot(midToBody, limbAxis);
+    let outward = v3sub(midToBody, v3scale(limbAxis, alongLimb));
+    const outLen = v3len(outward);
 
-    // Base bend direction adapts to leg geometry:
-    // - Foot well below hip: knees forward (wallNorm) + slight up
-    // - Foot near hip level (bunched): knees strongly outward (lateral + wallNorm)
-    // - Always some wallNorm to keep knees off the wall
-    const upWeight = 0.3 + footBelow * 0.7; // more upward when foot is below
-    const lateralWeight = 0.15 + bunchFactor * 0.5; // more lateral when bunched
-    const normWeight = 0.5 + bunchFactor * 0.3; // more outward when bunched
+    // Fallback: if pelvis is on the limb line, use Z-forward + up as outward
+    if (outLen < 0.01) {
+      outward = v3normalize(v3add([0, 0, 1], [0, 0.5, 0]));
+    } else {
+      outward = v3scale(outward, 1 / outLen);
+    }
+
+    // Foot below hip? Blend more upward (natural standing knee bend)
+    const footBelow = Math.max(0, Math.min(1, (hip[1] - ankle[1]) / (maxLeg * 0.5)));
+
+    // Blend: outward (away from wall) + up (gravity-aware) + lateral (splay)
+    const outWeight = 0.6 + bunchFactor * 0.2;
+    const upWeight = 0.2 + footBelow * 0.5;
+    const lateralWeight = 0.1 + bunchFactor * 0.4;
 
     let baseBend: V3 = v3normalize(
       v3add(
         v3add(
-          v3scale([0, 1, 0], upWeight),
-          v3scale(limbNorm, normWeight)
+          v3scale(outward, outWeight),
+          v3scale([0, 1, 0], upWeight)
         ),
         [lateralSign * lateralWeight, 0, 0]
       )
@@ -639,11 +906,10 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
 
     // Apply knee turn rotation (drop knee / frog)
     if (Math.abs(turnDeg) >= 1) {
-      const axis = v3normalize(hipToAnkle);
+      const axis = legDist > 0.001 ? limbAxis : [0, -1, 0] as V3;
       const turnRad = (turnDeg * Math.PI) / 180;
       const cos = Math.cos(turnRad);
       const sin = Math.sin(turnRad);
-      // Rodrigues' rotation
       const dot = v3dot(baseBend, axis);
       const cross = v3cross(axis, baseBend);
       baseBend = v3normalize(v3add(
@@ -655,25 +921,32 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
     return baseBend;
   };
 
-  const kneeBendL = computeKneeBend(hipL, ankleL, config.leftKneeTurnDeg, -1, config.leftFoot.y);
-  const kneeBendR = computeKneeBend(hipR, ankleR, config.rightKneeTurnDeg, 1, config.rightFoot.y);
+  const kneeBendL = computeKneeBend(hipL, ankleL, config.leftKneeTurnDeg, -1);
+  const kneeBendR = computeKneeBend(hipR, ankleR, config.rightKneeTurnDeg, 1);
   let kneeL = solveIK2Bone(hipL, ankleL, thigh, shin, kneeBendL);
   let kneeR = solveIK2Bone(hipR, ankleR, thigh, shin, kneeBendR);
 
-  // Clamp knees so they never go behind the wall surface.
-  // Project knee onto wall normal — if negative (behind wall), push it forward.
-  const clampKneeToWall = (knee: V3, footH: number): V3 => {
-    const { norm: limbNorm } = wallBasisAtHeight(footH);
-    const kneeNormalDist = v3dot(knee, limbNorm);
-    const minDist = 0.02; // small offset to keep knee visually in front
-    if (kneeNormalDist < minDist) {
-      // Push knee forward along wall normal to minDist
-      return v3add(knee, v3scale(limbNorm, minDist - kneeNormalDist));
-    }
-    return knee;
+  // Clamp knees: ensure they stay on the climber's side of the wall
+  // and never drop below the foot or ground level.
+  const clampKnee = (knee: V3, hip: V3, ankle: V3): V3 => {
+    let k: V3 = [...knee];
+
+    // Never below the lower of hip/ankle minus a small margin
+    const minY = Math.min(hip[1], ankle[1]) - 0.05;
+    if (k[1] < minY) k[1] = minY;
+
+    // Never below ground
+    if (k[1] < 0) k[1] = 0;
+
+    // Keep knee on the body side of the wall: knee Z should be >= the more
+    // forward of hip Z or ankle Z (whichever is further from wall)
+    const minZ = Math.min(hip[2], ankle[2]);
+    if (k[2] < minZ - 0.05) k[2] = minZ - 0.05;
+
+    return k;
   };
-  kneeL = clampKneeToWall(kneeL, config.leftFoot.y);
-  kneeR = clampKneeToWall(kneeR, config.rightFoot.y);
+  kneeL = clampKnee(kneeL, hipL, ankleL);
+  kneeR = clampKnee(kneeR, hipR, ankleR);
 
   // Dangling limbs: when a limb is off the wall, it hangs straight down
   // from its joint origin under gravity. Elbow/knee at upper bone length down,
@@ -683,22 +956,22 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
   let finalKneeL = kneeL, finalAnkleL = ankleL, finalLf = lfClamped;
   let finalKneeR = kneeR, finalAnkleR = ankleR, finalRf = rfClamped;
 
-  if (!config.leftHandOn) {
+  if (!leftHandOn) {
     finalElbowL = v3add(shoulderL, [0, -upperArm, 0]);
     finalWristL = v3add(shoulderL, [0, -(upperArm + forearm), 0]);
     finalLh = v3add(shoulderL, [0, -(upperArm + forearm + handLen), 0]);
   }
-  if (!config.rightHandOn) {
+  if (!rightHandOn) {
     finalElbowR = v3add(shoulderR, [0, -upperArm, 0]);
     finalWristR = v3add(shoulderR, [0, -(upperArm + forearm), 0]);
     finalRh = v3add(shoulderR, [0, -(upperArm + forearm + handLen), 0]);
   }
-  if (!config.leftFootOn) {
+  if (!leftFootOn) {
     finalKneeL = v3add(hipL, [0, -thigh, 0]);
     finalAnkleL = v3add(hipL, [0, -(thigh + shin), 0]);
     finalLf = v3add(hipL, [0, -(thigh + shin + footHeight), 0]);
   }
-  if (!config.rightFootOn) {
+  if (!rightFootOn) {
     finalKneeR = v3add(hipR, [0, -thigh, 0]);
     finalAnkleR = v3add(hipR, [0, -(thigh + shin), 0]);
     finalRf = v3add(hipR, [0, -(thigh + shin + footHeight), 0]);
@@ -751,7 +1024,7 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
           (chest[1] + pelvis[1]) / 2,
           (chest[2] + pelvis[2]) / 2,
         ];
-        const torsoHeight = v3len(v3sub(chest, pelvis));
+        const torsoHeight = torsoLen;
         const torsoDir = v3normalize(v3sub(chest, pelvis));
         const chestWidth = shoulderW * 0.8 * weightFactor;
         const waistWidth = hipW * 1.0 * weightFactor;
@@ -801,19 +1074,13 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
       <Joint position={finalKneeR} size={0.028 * s} color={skinColor} />
       <Joint position={finalAnkleR} size={0.018 * s} color={skinColor} />
 
-      {/* Hands */}
-      <Joint position={finalLh} size={0.018 * s} color={skinColor} />
-      <Joint position={finalRh} size={0.018 * s} color={skinColor} />
+      {/* Hands — grip varies by hold type */}
+      <Hand pos={finalLh} wrist={finalWristL} pull={config.leftHandPull} on={leftHandOn} s={s} skinColor={skinColor} side={-1} />
+      <Hand pos={finalRh} wrist={finalWristR} pull={config.rightHandPull} on={rightHandOn} s={s} skinColor={skinColor} side={1} />
 
-      {/* Feet — climbing shoe shape */}
-      <mesh position={finalLf} rotation={[config.leftFootOn ? angleRad : 0, 0, 0]}>
-        <boxGeometry args={[0.035 * s, footHeight, 0.07 * s]} />
-        <meshStandardMaterial color="#334455" roughness={0.8} />
-      </mesh>
-      <mesh position={finalRf} rotation={[config.rightFootOn ? angleRad : 0, 0, 0]}>
-        <boxGeometry args={[0.035 * s, footHeight, 0.07 * s]} />
-        <meshStandardMaterial color="#334455" roughness={0.8} />
-      </mesh>
+      {/* Feet — climbing shoe with heel/toe hooks */}
+      <ClimbingFoot pos={finalLf} ankle={finalAnkleL} pull={config.leftFootPull} on={leftFootOn} s={s} footHeight={footHeight} />
+      <ClimbingFoot pos={finalRf} ankle={finalAnkleR} pull={config.rightFootPull} on={rightFootOn} s={s} footHeight={footHeight} />
 
       {/* Chalk bag — Organic style: sage green + orange stripe, black fleece rim */}
       {(() => {
@@ -971,8 +1238,8 @@ function Climber({ config, forces, segments }: { config: ClimberConfig; forces: 
       <ArrowLine start={pelvis} direction={forces.gravity.clone().multiplyScalar(0.1)} color="#ff0000" />
       {config.leftHandOn && <ArrowLine start={finalLh} direction={forces.leftHandPull} color="#ffaa00" />}
       {config.rightHandOn && <ArrowLine start={finalRh} direction={forces.rightHandPull} color="#ffcc00" />}
-      {config.leftFootOn && <ArrowLine start={finalLf} direction={forces.leftFootPush} color="#00aaff" />}
-      {config.rightFootOn && <ArrowLine start={finalRf} direction={forces.rightFootPush} color="#0088ff" />}
+      {config.leftFootOn && <ArrowLine start={finalLf} direction={forces.leftFootPush} color="#44cc44" />}
+      {config.rightFootOn && <ArrowLine start={finalRf} direction={forces.rightFootPush} color="#33aa33" />}
       {forces.normal.length() > 0.1 && (
         <ArrowLine start={pelvis} direction={forces.normal.clone().multiplyScalar(0.1)} color="#aa44ff" />
       )}
