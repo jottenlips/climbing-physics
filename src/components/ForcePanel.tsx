@@ -25,8 +25,8 @@ export default function ForcePanel({ forces }: { forces: ForceResult }) {
     <div style={{ color: "#eee", fontFamily: "system-ui, sans-serif" }}>
       <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 700 }}>Force Analysis</h3>
 
-      <ForceBar label="Hand Force" value={forces.totalHandForceKg} max={100} color="#ffaa00" unit="kg" />
-      <ForceBar label="Hand Force" value={forces.totalHandForceLbs} max={220} color="#ffcc00" unit="lbs" />
+      <ForceBar label="Hand Force" value={forces.totalHandForceKg} max={100} color="#ffaa00"
+        unit={`kg / ${forces.totalHandForceLbs.toFixed(1)} lbs`} />
       <ForceBar label="Grip Used" value={forces.gripStrengthPercentUsed} max={100}
         color={forces.gripStrengthPercentUsed > 100 ? "#ff2222" : forces.gripStrengthPercentUsed > 75 ? "#ffaa00" : "#44cc66"} unit="%" />
 

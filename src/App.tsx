@@ -544,7 +544,14 @@ function App() {
         const [left, right] = lh.x <= rh.x ? [lh, rh] : [rh, lh];
         const footY = Math.max(0.15, Math.min(left.y, right.y) - 0.6);
         setState(prev => ({
-          ...prev, ...DEFAULT_STATE, wallAngleDeg: angle,
+          ...prev,
+          bodyRotationDeg: 0,
+          leftHandPull: "down", rightHandPull: "down",
+          leftFootPull: "edge" as PullDirection, rightFootPull: "edge" as PullDirection,
+          leftKneeTurnDeg: 0, rightKneeTurnDeg: 0,
+          hipOffset: 0.35, torsoOffset: 0.5,
+          leftHandOn: true, rightHandOn: true, leftFootOn: true, rightFootOn: true,
+          wallAngleDeg: angle,
           lhX: left.x, lhY: left.y, rhX: right.x, rhY: right.y,
           lfX: left.x, lfY: footY, rfX: right.x, rfY: footY,
         }));
@@ -779,7 +786,14 @@ function App() {
     const [left, right] = lh.x <= rh.x ? [lh, rh] : [rh, lh];
     const footY = Math.max(0.15, Math.min(left.y, right.y) - 0.6);
     setState(prev => ({
-      ...prev, ...DEFAULT_STATE, wallAngleDeg: preset.wallAngle,
+      ...prev,
+      bodyRotationDeg: 0,
+      leftHandPull: "down", rightHandPull: "down",
+      leftFootPull: "edge" as PullDirection, rightFootPull: "edge" as PullDirection,
+      leftKneeTurnDeg: 0, rightKneeTurnDeg: 0,
+      hipOffset: 0.35, torsoOffset: 0.5,
+      leftHandOn: true, rightHandOn: true, leftFootOn: true, rightFootOn: true,
+      wallAngleDeg: preset.wallAngle,
       lhX: left.x, lhY: left.y, rhX: right.x, rhY: right.y,
       lfX: left.x, lfY: footY, rfX: right.x, rfY: footY,
     }));
@@ -793,7 +807,14 @@ function App() {
     const [left, right] = lh.x <= rh.x ? [lh, rh] : [rh, lh];
     const footY = Math.max(0.15, Math.min(left.y, right.y) - 0.6);
     setState(prev => ({
-      ...prev, ...DEFAULT_STATE, wallAngleDeg: prev.wallAngleDeg,
+      ...prev,
+      bodyRotationDeg: 0,
+      leftHandPull: "down", rightHandPull: "down",
+      leftFootPull: "edge" as PullDirection, rightFootPull: "edge" as PullDirection,
+      leftKneeTurnDeg: 0, rightKneeTurnDeg: 0,
+      hipOffset: 0.35, torsoOffset: 0.5,
+      leftHandOn: true, rightHandOn: true, leftFootOn: true, rightFootOn: true,
+      wallAngleDeg: prev.wallAngleDeg,
       lhX: left.x, lhY: left.y, rhX: right.x, rhY: right.y,
       lfX: left.x, lfY: footY, rfX: right.x, rfY: footY,
     }));
@@ -1411,8 +1432,8 @@ function App() {
               {/* Climber settings */}
               <div style={{ color: "#888", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>Climber</div>
               <div style={{ background: "#1a1a22", borderRadius: 10, padding: 12, marginBottom: 10 }}>
-                <Slider label="Weight" value={state.bodyWeightKg} min={30} max={120} step={1} onChange={(v) => set("bodyWeightKg", v)} suffix="kg" />
-                <Slider label="Grip" value={state.gripStrengthKg} min={10} max={100} step={1} onChange={(v) => set("gripStrengthKg", v)} suffix="kg" />
+                <Slider label="Weight" value={state.bodyWeightKg} min={30} max={136} step={1} onChange={(v) => set("bodyWeightKg", v)} suffix={`kg / ${(state.bodyWeightKg * 2.20462).toFixed(0)} lbs`} />
+                <Slider label="Grip" value={state.gripStrengthKg} min={10} max={100} step={1} onChange={(v) => set("gripStrengthKg", v)} suffix={`kg / ${(state.gripStrengthKg * 2.20462).toFixed(0)} lbs`} />
                 <Slider label="Height" value={state.heightFt} min={4.5} max={7} step={0.08333} onChange={(v) => set("heightFt", v)} />
                 <div style={{ fontSize: 11, color: "#666", marginBottom: 4, paddingLeft: 74 }}>
                   {feetToFtIn(state.heightFt)} / {(state.heightFt * 30.48).toFixed(0)}cm
