@@ -308,72 +308,116 @@ function PlacedHold3D({ hold, wallAngleRad, toWorld, onClick, eraserMode }: {
   }
 }
 
-function Wall({ angleDeg, onWallClick, placingMode }: {
+interface WallSegment {
+  height: number;
   angleDeg: number;
+}
+
+function Wall({ segments, onWallClick, placingMode }: {
+  segments: WallSegment[];
   onWallClick?: (x: number, y: number) => void;
   placingMode?: boolean;
 }) {
-  const angleRad = (angleDeg * Math.PI) / 180;
   const wallWidth = 3;
-  const wallHeight = 4;
 
-  const wallUp: V3 = [0, Math.cos(angleRad), Math.sin(angleRad)];
+  // Compute each segment's base position in world space
+  const segmentData = useMemo(() => {
+    const data: { baseY: number; baseZ: number; angleRad: number; height: number; cumHeight: number }[] = [];
+    let curY = 0, curZ = 0, cumH = 0;
+    for (const seg of segments) {
+      const angleRad = (seg.angleDeg * Math.PI) / 180;
+      data.push({ baseY: curY, baseZ: curZ, angleRad, height: seg.height, cumHeight: cumH });
+      curY += seg.height * Math.cos(angleRad);
+      curZ += seg.height * Math.sin(angleRad);
+      cumH += seg.height;
+    }
+    return data;
+  }, [segments]);
 
-  const handleClick = useCallback((e: ThreeEvent<MouseEvent>) => {
+  const handleClick = useCallback((segIdx: number, e: ThreeEvent<MouseEvent>) => {
     if (!onWallClick || !placingMode) return;
     e.stopPropagation();
     const pt = e.point;
-    // Convert world point to wall-local coords
-    const x = pt.x;
-    const h = pt.y * wallUp[1] + pt.z * wallUp[2];
-    // Clamp to wall bounds
-    const cx = Math.max(-wallWidth / 2 + 0.1, Math.min(wallWidth / 2 - 0.1, x));
-    const ch = Math.max(0.1, Math.min(wallHeight - 0.1, h));
-    onWallClick(cx, ch);
-  }, [onWallClick, placingMode, wallUp]);
+    const seg = segmentData[segIdx];
+    const wallUp: V3 = [0, Math.cos(seg.angleRad), Math.sin(seg.angleRad)];
+    // Project world point onto this segment's plane to get local height
+    const localH = (pt.y - seg.baseY) * wallUp[1] + (pt.z - seg.baseZ) * wallUp[2];
+    const wallY = seg.cumHeight + localH;
+    const cx = Math.max(-wallWidth / 2 + 0.1, Math.min(wallWidth / 2 - 0.1, pt.x));
+    const totalH = segments.reduce((s, seg2) => s + seg2.height, 0);
+    const cy = Math.max(0.1, Math.min(totalH - 0.1, wallY));
+    onWallClick(cx, cy);
+  }, [onWallClick, placingMode, segmentData, segments]);
 
   return (
     <group>
-      <mesh
-        rotation={[angleRad, 0, 0]}
-        position={[0, wallHeight / 2 * Math.cos(angleRad), wallHeight / 2 * Math.sin(angleRad)]}
-        onClick={handleClick}
-      >
-        <planeGeometry args={[wallWidth, wallHeight]} />
-        <meshStandardMaterial
-          color={placingMode ? "#9B8365" : "#8B7355"}
-          side={THREE.DoubleSide}
-          transparent
-          opacity={placingMode ? 0.55 : 0.45}
-        />
-      </mesh>
-      <mesh
-        rotation={[angleRad, 0, 0]}
-        position={[0, wallHeight / 2 * Math.cos(angleRad), wallHeight / 2 * Math.sin(angleRad) + 0.001]}
-      >
-        <planeGeometry args={[wallWidth, wallHeight, 6, 8]} />
-        <meshBasicMaterial color="#6B5335" wireframe side={THREE.DoubleSide} />
-      </mesh>
+      {segmentData.map((seg, i) => {
+        const centerY = seg.baseY + (seg.height / 2) * Math.cos(seg.angleRad);
+        const centerZ = seg.baseZ + (seg.height / 2) * Math.sin(seg.angleRad);
+        const gridSegsY = Math.max(1, Math.round(seg.height / 0.5));
+        return (
+          <group key={i}>
+            <mesh
+              rotation={[seg.angleRad, 0, 0]}
+              position={[0, centerY, centerZ]}
+              onClick={(e) => handleClick(i, e)}
+            >
+              <planeGeometry args={[wallWidth, seg.height]} />
+              <meshStandardMaterial
+                color={placingMode ? "#9B8365" : "#8B7355"}
+                side={THREE.DoubleSide}
+                transparent
+                opacity={placingMode ? 0.55 : 0.45}
+              />
+            </mesh>
+            <mesh
+              rotation={[seg.angleRad, 0, 0]}
+              position={[0, centerY, centerZ + 0.001]}
+            >
+              <planeGeometry args={[wallWidth, seg.height, 6, gridSegsY]} />
+              <meshBasicMaterial color="#6B5335" wireframe side={THREE.DoubleSide} />
+            </mesh>
+          </group>
+        );
+      })}
     </group>
   );
 }
 
-function Climber({ config, forces }: { config: ClimberConfig; forces: ForceResult }) {
+function Climber({ config, forces, segments }: { config: ClimberConfig; forces: ForceResult; segments?: WallSegment[] }) {
   const angleRad = forces.wallAngleRad;
   const s = config.heightFt / 5.75;
   const heightM = config.heightFt * 0.3048;
   const apeRatio = config.apeIndexIn / (config.heightFt * 12);
 
-  // Wall basis vectors
+  // Wall basis vectors (fallback for single-segment)
   const wallUp: V3 = [0, Math.cos(angleRad), Math.sin(angleRad)];
   const wallNorm: V3 = [0, -Math.sin(angleRad), Math.cos(angleRad)];
 
   // Place a point on the wall surface (x=lateral, h=height along wall, d=offset along normal)
-  const toWorld = (x: number, h: number, d: number): V3 => [
-    x,
-    h * wallUp[1] + d * wallNorm[1],
-    h * wallUp[2] + d * wallNorm[2],
-  ];
+  const toWorld = (x: number, h: number, d: number): V3 => {
+    if (!segments || segments.length <= 1) {
+      return [x, h * wallUp[1] + d * wallNorm[1], h * wallUp[2] + d * wallNorm[2]];
+    }
+    // Multi-segment: find correct segment for this height
+    let curWorldY = 0, curWorldZ = 0, remaining = h;
+    for (const seg of segments) {
+      const ar = (seg.angleDeg * Math.PI) / 180;
+      const su: V3 = [0, Math.cos(ar), Math.sin(ar)];
+      const sn: V3 = [0, -Math.sin(ar), Math.cos(ar)];
+      if (remaining <= seg.height) {
+        return [x, curWorldY + remaining * su[1] + d * sn[1], curWorldZ + remaining * su[2] + d * sn[2]];
+      }
+      curWorldY += seg.height * su[1];
+      curWorldZ += seg.height * su[2];
+      remaining -= seg.height;
+    }
+    const last = segments[segments.length - 1];
+    const ar = (last.angleDeg * Math.PI) / 180;
+    const su: V3 = [0, Math.cos(ar), Math.sin(ar)];
+    const sn: V3 = [0, -Math.sin(ar), Math.cos(ar)];
+    return [x, curWorldY + remaining * su[1] + d * sn[1], curWorldZ + remaining * su[2] + d * sn[2]];
+  };
 
   // Holds ON the wall
   const lh = toWorld(config.leftHand.x, config.leftHand.y, HOLD_OFFSET);
@@ -1183,7 +1227,7 @@ function SittingClimber({ scale }: { scale: number }) {
   );
 }
 
-function ToppingOutClimber({ scale, wallAngleDeg }: { scale: number; wallAngleDeg: number }) {
+function ToppingOutClimber({ scale, wallAngleDeg, segments }: { scale: number; wallAngleDeg: number; segments?: WallSegment[] }) {
   const s = scale;
   const skinColor = "#ddbbaa";
   const torsoColor = "#5588aa";
@@ -1195,11 +1239,20 @@ function ToppingOutClimber({ scale, wallAngleDeg }: { scale: number; wallAngleDe
   const thighL = 0.22 * s;
   const shinL = 0.18 * s;
 
-  // Sitting on top of wall — wall is 4m tall
-  const angleRad = (wallAngleDeg * Math.PI) / 180;
-  const wallTop = 4;
-  const topY = wallTop * Math.cos(angleRad);
-  const topZ = wallTop * Math.sin(angleRad);
+  // Compute top of wall from segments
+  const { topY, topZ } = useMemo(() => {
+    if (!segments || segments.length === 0) {
+      const angleRad = (wallAngleDeg * Math.PI) / 180;
+      return { topY: 4 * Math.cos(angleRad), topZ: 4 * Math.sin(angleRad) };
+    }
+    let curY = 0, curZ = 0;
+    for (const seg of segments) {
+      const ar = (seg.angleDeg * Math.PI) / 180;
+      curY += seg.height * Math.cos(ar);
+      curZ += seg.height * Math.sin(ar);
+    }
+    return { topY: curY, topZ: curZ };
+  }, [segments, wallAngleDeg]);
 
   const pelvisY = topY + 0.08 * s;
   const chestY = pelvisY + torsoH;
@@ -1243,31 +1296,31 @@ function ToppingOutClimber({ scale, wallAngleDeg }: { scale: number; wallAngleDe
         <cylinderGeometry args={[torsoW * 0.85, torsoW, torsoH, 10]} />
         <meshStandardMaterial color={torsoColor} roughness={0.7} />
       </mesh>
-      {/* Legs dangling over edge */}
-      <mesh position={[-0.05 * s, pelvisY - thighL * 0.35, 0.05]} rotation={[0.4, 0, 0.08]}>
+      {/* Thighs - going forward horizontally from pelvis, slight splay */}
+      <mesh position={[-0.05 * s, pelvisY - 0.02 * s, thighL * 0.45]} rotation={[Math.PI / 2 - 0.15, 0, 0.06]}>
         <cylinderGeometry args={[0.025 * s, 0.022 * s, thighL, 8]} />
         <meshStandardMaterial color={legColor} roughness={0.7} />
       </mesh>
-      <mesh position={[0.05 * s, pelvisY - thighL * 0.35, 0.05]} rotation={[0.4, 0, -0.08]}>
+      <mesh position={[0.05 * s, pelvisY - 0.02 * s, thighL * 0.45]} rotation={[Math.PI / 2 - 0.15, 0, -0.06]}>
         <cylinderGeometry args={[0.025 * s, 0.022 * s, thighL, 8]} />
         <meshStandardMaterial color={legColor} roughness={0.7} />
       </mesh>
-      {/* Shins hanging */}
-      <mesh position={[-0.06 * s, pelvisY - thighL - shinL * 0.3, 0.12]} rotation={[0.2, 0, 0.05]}>
+      {/* Shins - hanging straight down from knees */}
+      <mesh position={[-0.06 * s, pelvisY - 0.02 * s - shinL * 0.5, thighL * 0.85]} rotation={[0.1, 0, 0.03]}>
         <cylinderGeometry args={[0.02 * s, 0.018 * s, shinL, 8]} />
         <meshStandardMaterial color={legColor} roughness={0.7} />
       </mesh>
-      <mesh position={[0.06 * s, pelvisY - thighL - shinL * 0.3, 0.12]} rotation={[0.2, 0, -0.05]}>
+      <mesh position={[0.06 * s, pelvisY - 0.02 * s - shinL * 0.5, thighL * 0.85]} rotation={[0.1, 0, -0.03]}>
         <cylinderGeometry args={[0.02 * s, 0.018 * s, shinL, 8]} />
         <meshStandardMaterial color={legColor} roughness={0.7} />
       </mesh>
-      {/* Feet */}
-      <mesh position={[-0.06 * s, pelvisY - thighL - shinL * 0.65, 0.15]}>
-        <boxGeometry args={[0.035 * s, 0.02 * s, 0.07 * s]} />
+      {/* Feet - pointing forward */}
+      <mesh position={[-0.06 * s, pelvisY - 0.02 * s - shinL * 0.95, thighL * 0.88]} rotation={[Math.PI / 2, 0, 0]}>
+        <boxGeometry args={[0.035 * s, 0.07 * s, 0.02 * s]} />
         <meshStandardMaterial color={shoeColor} roughness={0.8} />
       </mesh>
-      <mesh position={[0.06 * s, pelvisY - thighL - shinL * 0.65, 0.15]}>
-        <boxGeometry args={[0.035 * s, 0.02 * s, 0.07 * s]} />
+      <mesh position={[0.06 * s, pelvisY - 0.02 * s - shinL * 0.95, thighL * 0.88]} rotation={[Math.PI / 2, 0, 0]}>
+        <boxGeometry args={[0.035 * s, 0.07 * s, 0.02 * s]} />
         <meshStandardMaterial color={shoeColor} roughness={0.8} />
       </mesh>
       {/* Left arm resting on lap */}
@@ -1365,6 +1418,106 @@ function SleepingZs({ origin }: { origin: V3 }) {
           </Text>
         </group>
       ))}
+    </group>
+  );
+}
+
+function Bird({ cx, cy, cz, radius, speed, phase }: {
+  cx: number; cy: number; cz: number; radius: number; speed: number; phase: number;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const leftWingRef = useRef<THREE.Mesh>(null);
+  const rightWingRef = useRef<THREE.Mesh>(null);
+
+  // V-shaped wing geometry
+  const wingGeo = useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    // A single wing: narrow at body, wider at tip, slight sweep
+    geo.setAttribute("position", new THREE.Float32BufferAttribute([
+      0, 0, 0,        // body attachment
+      0.3, 0, -0.04,  // mid wing
+      0.55, 0.02, -0.08, // wing tip
+      0, 0, 0.03,     // body back
+      0.3, 0, 0.01,   // mid back
+    ], 3));
+    geo.setIndex([0, 1, 4, 0, 4, 3, 1, 2, 4]);
+    geo.computeVertexNormals();
+    return geo;
+  }, []);
+
+  useFrame(() => {
+    if (!groupRef.current) return;
+    const t = Date.now() * 0.001;
+    const angle = t * speed + phase;
+
+    // Soaring path with gentle drift
+    const x = cx + Math.sin(angle) * radius;
+    const z = cz + Math.cos(angle * 0.7) * radius * 0.6;
+    const y = cy + Math.sin(angle * 1.3) * 0.8;
+
+    groupRef.current.position.set(x, y, z);
+
+    // Face direction of travel
+    const dx = Math.cos(angle) * radius * speed;
+    const dz = -Math.sin(angle * 0.7) * radius * 0.6 * speed * 0.7;
+    groupRef.current.rotation.y = Math.atan2(dx, dz);
+
+    // Slight banking on turns
+    groupRef.current.rotation.z = -Math.cos(angle) * 0.15;
+
+    // Wing flap - slow graceful flaps with glide pauses
+    const flapCycle = (t * 2.5 + phase * 3) % 4; // 4 second cycle
+    let flapAngle: number;
+    if (flapCycle < 0.3) flapAngle = Math.sin(flapCycle / 0.3 * Math.PI) * 0.5; // up
+    else if (flapCycle < 0.6) flapAngle = Math.sin((flapCycle - 0.3) / 0.3 * Math.PI) * -0.3; // down
+    else flapAngle = Math.sin((flapCycle - 0.6) * 0.3) * 0.05; // glide
+
+    if (leftWingRef.current) leftWingRef.current.rotation.z = flapAngle;
+    if (rightWingRef.current) rightWingRef.current.rotation.z = -flapAngle;
+  });
+
+  return (
+    <group ref={groupRef}>
+      {/* Body */}
+      <mesh>
+        <capsuleGeometry args={[0.015, 0.06, 4, 6]} />
+        <meshStandardMaterial color="#2a2a2a" roughness={0.9} flatShading />
+      </mesh>
+      {/* Left wing */}
+      <mesh ref={leftWingRef} geometry={wingGeo} scale={[1, 1, 1]}>
+        <meshStandardMaterial color="#1a1a1a" roughness={0.8} side={THREE.DoubleSide} flatShading />
+      </mesh>
+      {/* Right wing */}
+      <mesh ref={rightWingRef} geometry={wingGeo} scale={[-1, 1, 1]}>
+        <meshStandardMaterial color="#1a1a1a" roughness={0.8} side={THREE.DoubleSide} flatShading />
+      </mesh>
+      {/* Tail */}
+      <mesh position={[0, 0, 0.04]} rotation={[0.2, 0, 0]}>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position"
+            array={new Float32Array([-0.02, 0, 0, 0.02, 0, 0, 0, 0, 0.04])}
+            count={3} itemSize={3} />
+        </bufferGeometry>
+        <meshStandardMaterial color="#1a1a1a" side={THREE.DoubleSide} flatShading />
+      </mesh>
+    </group>
+  );
+}
+
+function Birds() {
+  const birds = useMemo(() =>
+    Array.from({ length: 8 }, () => ({
+      cx: (Math.random() - 0.5) * 30,
+      cy: 12 + Math.random() * 10,
+      cz: -10 + (Math.random() - 0.5) * 30,
+      radius: 3 + Math.random() * 5,
+      speed: 0.12 + Math.random() * 0.1,
+      phase: Math.random() * Math.PI * 2,
+    })), []);
+
+  return (
+    <group>
+      {birds.map((b, i) => <Bird key={i} {...b} />)}
     </group>
   );
 }
@@ -1485,27 +1638,48 @@ function CragDog() {
 function Mountains() {
   const mountainData = useMemo(() => {
     // Generate several mountain ranges at different depths
-    const ranges: { peaks: number[]; z: number; color: string; baseY: number }[] = [
-      { peaks: [-30, 8, -20, 12, -10, 9, -3, 14, 5, 10, 12, 16, 20, 11, 28, 13, 35, 8], z: -40, color: "#2a3a4a", baseY: -2 },
-      { peaks: [-35, 6, -25, 10, -15, 7, -5, 11, 3, 8, 10, 13, 18, 9, 25, 11, 32, 6, 40, 8], z: -30, color: "#354555", baseY: -2 },
-      { peaks: [-32, 4, -22, 7, -12, 5, -4, 9, 4, 6, 11, 10, 19, 7, 27, 8, 36, 5], z: -22, color: "#405060", baseY: -2 },
+    const ranges: { peaks: number[]; z: number; color: string; baseY: number; snowLine?: number }[] = [
+      // Near foothills behind wall
+      { peaks: [-40, 2, -30, 5, -20, 3, -10, 6, 0, 4, 10, 7, 20, 5, 30, 6, 40, 3], z: -18, color: "#5a6555", baseY: -2 },
+      // Mid hills behind wall
+      { peaks: [-45, 5, -35, 9, -25, 6, -15, 12, -5, 8, 5, 11, 15, 7, 25, 10, 35, 6, 45, 5], z: -32, color: "#4a5550", baseY: -2 },
+      // Tall ridge behind wall
+      { peaks: [-50, 8, -40, 14, -30, 10, -20, 18, -10, 12, 0, 16, 10, 11, 20, 15, 30, 9, 40, 12, 50, 7], z: -48, color: "#3a4a52", baseY: -2, snowLine: 14 },
+      // Front valley wall
+      { peaks: [-45, 10, -35, 16, -25, 12, -15, 18, -5, 13, 5, 16, 15, 11, 25, 14, 35, 10, 45, 12], z: 35, color: "#3a4a55", baseY: -2, snowLine: 14 },
+      // Side hills
+      { peaks: [-55, 3, -48, 7, -42, 5, -36, 9, -30, 5], z: -16, color: "#4d5a50", baseY: -2 },
+      { peaks: [30, 5, 36, 9, 42, 5, 48, 7, 55, 3], z: -16, color: "#4d5a50", baseY: -2 },
     ];
 
     return ranges.map((range) => {
       const verts: number[] = [];
+      const colors: number[] = [];
       const indices: number[] = [];
       const pairs = [];
       for (let i = 0; i < range.peaks.length; i += 2) {
         pairs.push({ x: range.peaks[i], y: range.peaks[i + 1] });
       }
 
-      // Build triangle strip: for each peak, add top vertex and bottom vertex
+      const baseColor = new THREE.Color(range.color);
+      const snowColor = new THREE.Color("#e8e8f0");
+
       for (let i = 0; i < pairs.length; i++) {
         const vi = verts.length / 3;
-        verts.push(pairs[i].x, pairs[i].y, range.z);  // top
-        verts.push(pairs[i].x, range.baseY, range.z);  // bottom
+        verts.push(pairs[i].x, pairs[i].y, range.z);
+        verts.push(pairs[i].x, range.baseY, range.z);
+
+        // Snow on peaks above snowLine
+        if (range.snowLine && pairs[i].y > range.snowLine) {
+          const snowBlend = Math.min(1, (pairs[i].y - range.snowLine) / 6);
+          const c = baseColor.clone().lerp(snowColor, snowBlend);
+          colors.push(c.r, c.g, c.b);
+        } else {
+          colors.push(baseColor.r, baseColor.g, baseColor.b);
+        }
+        colors.push(baseColor.r, baseColor.g, baseColor.b); // base always rock color
+
         if (i > 0) {
-          // Two triangles forming a quad between this peak and the previous
           indices.push(vi - 2, vi - 1, vi);
           indices.push(vi - 1, vi + 1, vi);
         }
@@ -1513,10 +1687,11 @@ function Mountains() {
 
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+      geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
       geometry.setIndex(indices);
       geometry.computeVertexNormals();
 
-      return { geometry, color: range.color };
+      return { geometry, color: range.color, hasVertexColors: !!range.snowLine };
     });
   }, []);
 
@@ -1524,13 +1699,19 @@ function Mountains() {
     <group>
       {mountainData.map((m, i) => (
         <mesh key={i} geometry={m.geometry}>
-          <meshStandardMaterial color={m.color} roughness={1} flatShading />
+          <meshStandardMaterial
+            color={m.hasVertexColors ? "#ffffff" : m.color}
+            vertexColors={m.hasVertexColors}
+            roughness={1}
+            flatShading
+            side={THREE.DoubleSide}
+          />
         </mesh>
       ))}
       {/* Ground plane */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
         <planeGeometry args={[200, 200]} />
-        <meshStandardMaterial color="#2d3d2d" roughness={1} />
+        <meshStandardMaterial color="#3a4a35" roughness={1} />
       </mesh>
       {/* Distant trees (simple cones) */}
       {useMemo(() => {
@@ -1540,9 +1721,9 @@ function Mountains() {
           return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
         };
         const rand = rng(42);
-        for (let i = 0; i < 60; i++) {
-          const x = (rand() - 0.5) * 50;
-          const z = -8 - rand() * 20;
+        for (let i = 0; i < 300; i++) {
+          const x = (rand() - 0.5) * 80;
+          const z = i < 160 ? -6 - rand() * 30 : 18 + rand() * 15;
           const h = 1.5 + rand() * 3;
           const r = 0.4 + rand() * 0.6;
           trees.push(
@@ -2080,27 +2261,47 @@ function DeerHerd() {
   );
 }
 
-function PlacedHoldsGroup({ holds, wallAngleDeg, onHoldClick, eraserMode }: {
+function PlacedHoldsGroup({ holds, segments, onHoldClick, eraserMode }: {
   holds: PlacedHold[];
-  wallAngleDeg: number;
+  segments: WallSegment[];
   onHoldClick?: (id: string) => void;
   eraserMode?: boolean;
 }) {
-  const angleRad = (wallAngleDeg * Math.PI) / 180;
-  const wallUp: V3 = [0, Math.cos(angleRad), Math.sin(angleRad)];
-  const wallNorm: V3 = [0, -Math.sin(angleRad), Math.cos(angleRad)];
-
-  const toWorld = (x: number, h: number, d: number): V3 => [
-    x,
-    h * wallUp[1] + d * wallNorm[1],
-    h * wallUp[2] + d * wallNorm[2],
-  ];
+  const toWorldSeg = useCallback((x: number, h: number, d: number): { pos: V3; angleRad: number } => {
+    // Find which segment this height falls on
+    let curWorldY = 0, curWorldZ = 0, remaining = h;
+    for (const seg of segments) {
+      const ar = (seg.angleDeg * Math.PI) / 180;
+      if (remaining <= seg.height) {
+        const wallUp: V3 = [0, Math.cos(ar), Math.sin(ar)];
+        const wallNorm: V3 = [0, -Math.sin(ar), Math.cos(ar)];
+        const wy = curWorldY + remaining * wallUp[1] + d * wallNorm[1];
+        const wz = curWorldZ + remaining * wallUp[2] + d * wallNorm[2];
+        return { pos: [x, wy, wz], angleRad: ar };
+      }
+      curWorldY += seg.height * Math.cos(ar);
+      curWorldZ += seg.height * Math.sin(ar);
+      remaining -= seg.height;
+    }
+    // Past top - use last segment
+    const last = segments[segments.length - 1];
+    const ar = (last.angleDeg * Math.PI) / 180;
+    const wallUp: V3 = [0, Math.cos(ar), Math.sin(ar)];
+    const wallNorm: V3 = [0, -Math.sin(ar), Math.cos(ar)];
+    const wy = curWorldY + remaining * wallUp[1] + d * wallNorm[1];
+    const wz = curWorldZ + remaining * wallUp[2] + d * wallNorm[2];
+    return { pos: [x, wy, wz], angleRad: ar };
+  }, [segments]);
 
   return (
     <group>
-      {holds.map((hold) => (
-        <PlacedHold3D key={hold.id} hold={hold} wallAngleRad={angleRad} toWorld={toWorld} onClick={onHoldClick} eraserMode={eraserMode} />
-      ))}
+      {holds.map((hold) => {
+        const { pos: _p, angleRad } = toWorldSeg(hold.x, hold.y, 0);
+        const toWorld = (x: number, h: number, d: number): V3 => toWorldSeg(x, h, d).pos;
+        return (
+          <PlacedHold3D key={hold.id} hold={hold} wallAngleRad={angleRad} toWorld={toWorld} onClick={onHoldClick} eraserMode={eraserMode} />
+        );
+      })}
     </group>
   );
 }
@@ -2108,6 +2309,7 @@ function PlacedHoldsGroup({ holds, wallAngleDeg, onHoldClick, eraserMode }: {
 export default function ClimbingScene({
   config,
   placedHolds = [],
+  wallSegments = [{ height: 4, angleDeg: 0 }],
   onWallClick,
   onHoldClick,
   placingMode = false,
@@ -2118,6 +2320,7 @@ export default function ClimbingScene({
 }: {
   config: ClimberConfig;
   placedHolds?: PlacedHold[];
+  wallSegments?: WallSegment[];
   onWallClick?: (x: number, y: number) => void;
   onHoldClick?: (id: string) => void;
   placingMode?: boolean;
@@ -2139,7 +2342,7 @@ export default function ClimbingScene({
         <ambientLight intensity={0.6} />
         <directionalLight position={[100, 60, -50]} intensity={0.9} castShadow />
         <pointLight position={[-2, 3, 3]} intensity={0.3} />
-        <fog attach="fog" args={["#7a8fa6", 20, 60]} />
+        <fog attach="fog" args={["#7a8fa6", 20, 70]} />
         <Mountains />
         <River />
         <DeerHerd />
@@ -2147,12 +2350,13 @@ export default function ClimbingScene({
         <Tent />
         <Campfire />
         <CragDog />
-        <Wall angleDeg={config.wallAngleDeg} onWallClick={onWallClick} placingMode={placingMode} />
-        <PlacedHoldsGroup holds={placedHolds} wallAngleDeg={config.wallAngleDeg} onHoldClick={onHoldClick} eraserMode={eraserMode} />
+        <Birds />
+        <Wall segments={wallSegments} onWallClick={onWallClick} placingMode={placingMode} />
+        <PlacedHoldsGroup holds={placedHolds} segments={wallSegments} onHoldClick={onHoldClick} eraserMode={eraserMode} />
         {ragdollParts ? <RagdollClimber parts={ragdollParts} />
           : sittingOnGround ? <SittingClimber scale={config.heightFt / 5.75} />
-          : toppedOut ? <ToppingOutClimber scale={config.heightFt / 5.75} wallAngleDeg={config.wallAngleDeg} />
-          : <Climber config={config} forces={forces} />}
+          : toppedOut ? <ToppingOutClimber scale={config.heightFt / 5.75} wallAngleDeg={config.wallAngleDeg} segments={wallSegments} />
+          : <Climber config={config} forces={forces} segments={wallSegments} />}
         <OrbitControls makeDefault minDistance={2} maxDistance={20} target={[0, 1.5, 0.5]} />
         <gridHelper args={[10, 20, "#333333", "#222222"]} />
       </Canvas>
