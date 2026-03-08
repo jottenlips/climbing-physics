@@ -982,8 +982,9 @@ function SandstoneWall({ pitches: wallPitches }: { pitches: PitchData[] }) {
   );
 }
 
-// --- Traversal wall panel — extends left or right from tower ---
-function TraversalWall({
+// --- Traversal wall panel — extends left or right from tower (disabled) ---
+// @ts-ignore: kept for future use
+function _TraversalWall({
   baseY,
   dir,
   segments,
@@ -3626,17 +3627,8 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
         ...updated[currentPitchIdx],
         completed: true,
       };
-      // ~25% chance of a traversal pitch (not on first pitch, not back-to-back traversals)
-      const prevPitch = updated[currentPitchIdx];
-      const prevIsTraversal = prevPitch?.isTraversal;
       const nextPitchNum = currentPitchIdx + 2;
-      const nextXOffset = getNextXOffset(prevPitch);
-      const doTraversal =
-        !prevIsTraversal && nextPitchNum > 2 && Math.random() < 0.25;
-      let newPitch = doTraversal
-        ? generateTraversalPitch(nextPitchNum, pitchTopY)
-        : generatePitch(nextPitchNum, pitchTopY);
-      newPitch = applyPitchXOffset(newPitch, nextXOffset);
+      const newPitch = generatePitch(nextPitchNum, pitchTopY);
       updated.push(newPitch);
       return updated;
     });
@@ -3995,15 +3987,6 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
           <DesertBirds />
           <SandstoneWall pitches={pitches} />
 
-          {/* Traversal wall panel */}
-          {currentPitch.isTraversal && currentPitch.traversalDir && (
-            <TraversalWall
-              baseY={pitchBaseY}
-              dir={currentPitch.traversalDir}
-              segments={allSegments}
-              pitchXOffset={currentPitch.xOffset}
-            />
-          )}
 
           {allHolds.map((hold) => (
             <HoldMesh
@@ -4735,8 +4718,6 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
                 [
                   ["normal", "Normal"],
                   ["short-crux", "Short Crux (2x)"],
-                  ["traverse-left", "Traverse Left"],
-                  ["traverse-right", "Traverse Right"],
                 ] as [DebugPitchType, string][]
               ).map(([type, label]) => (
                 <button
