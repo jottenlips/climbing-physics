@@ -6,6 +6,7 @@ import {
   explorerPos,
 } from "./components/ClimbingScene";
 import ForcePanel from "./components/ForcePanel";
+import MultiPitchPage from "./components/MultiPitchPage";
 import {
   ClimberConfig,
   PullDirection,
@@ -779,6 +780,16 @@ function getSharedRouteFromURL(): {
 type PanelType = "none" | "routes" | "holds" | "settings" | "forces";
 
 function App() {
+  const [page, setPage] = useState<"main" | "multipitch">("main");
+
+  if (page === "multipitch") {
+    return <MultiPitchPage onBack={() => setPage("main")} />;
+  }
+
+  return <MainPage onMultiPitch={() => setPage("multipitch")} />;
+}
+
+function MainPage({ onMultiPitch }: { onMultiPitch: () => void }) {
   const [state, setState] = useState<ClimberState>(DEFAULT_STATE);
   const [activePreset, setActivePreset] = useState("45 Steep");
   const [activeTwist, setActiveTwist] = useState("Square");
@@ -2401,6 +2412,17 @@ function App() {
                   }}
                 >
                   {isExploring ? "Back" : "Explore"}
+                </button>
+                <button
+                  onClick={onMultiPitch}
+                  style={{
+                    ...pill,
+                    background: "#886622",
+                    flex: 1,
+                    maxWidth: 140,
+                  }}
+                >
+                  Game
                 </button>
                 <button
                   onClick={() => togglePanel("settings")}
