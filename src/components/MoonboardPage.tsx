@@ -280,18 +280,23 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
   const climberForceLb = cfg.climberWeightLb * cfg.dynamicMultiplier;
   const totalLoadLb = totalDeadLoadLb + climberForceLb;
 
-  const kickerBaseZ = BOARD_HEIGHT_FT * Math.sin(angleRad);
+  // Board geometry: hinge at kicker top-front edge, board extends up and out
+  const kickerWidthFt = SIX_BY_SIX.width; // 6x6 cross-section = distance from wall to hinge
   const boardTopY = kickerFt + BOARD_HEIGHT_FT * Math.cos(angleRad);
-  const boardTopZ = 0;
+  const boardTopZ = kickerWidthFt + BOARD_HEIGHT_FT * Math.sin(angleRad);
+  const kickerBaseZ = boardTopZ; // how far out the board extends from wall
 
+  // Wall anchor point (on the wall surface, Z ≈ 0)
   const wallAnchorY = cfg.wallAnchorHeightFt;
   const wallAnchorZ = 0;
 
+  // Suspension geometry: from board top to wall anchor
   const suspDY = wallAnchorY - boardTopY;
-  const suspDZ = boardTopZ - wallAnchorZ;
+  const suspDZ = wallAnchorZ - boardTopZ; // negative (chain goes toward wall)
   const suspensionLengthFt = Math.sqrt(suspDY ** 2 + suspDZ ** 2);
-  const suspAngleRad = Math.atan2(Math.abs(suspDY), Math.max(Math.abs(suspDZ), 0.01));
-  const suspensionAngleDeg = (suspAngleRad * 180) / Math.PI;
+  // Angle from horizontal: steep = more vertical, shallow = more horizontal
+  const suspAngleFromHoriz = Math.atan2(Math.abs(suspDY), Math.abs(suspDZ));
+  const suspensionAngleDeg = (suspAngleFromHoriz * 180) / Math.PI;
 
   if (boardTopY > cfg.ceilingHeightFt) {
     warnings.push(`Board top (${boardTopY.toFixed(1)}') exceeds ceiling (${cfg.ceilingHeightFt}'). Reduce angle.`);
@@ -300,18 +305,30 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
     warnings.push(`Wall anchor (${cfg.wallAnchorHeightFt}') is above ceiling (${cfg.ceilingHeightFt}').`);
   }
 
-  const boardCGZ = kickerBaseZ - (BOARD_HEIGHT_FT / 2) * Math.sin(angleRad);
-  const climberZ = kickerBaseZ - (BOARD_HEIGHT_FT * 0.67) * Math.sin(angleRad);
+  // Overturning moment about the hinge (kicker base)
+  // Board CG and climber position measured as horizontal distance from wall
+  const boardCGZ = kickerWidthFt + (BOARD_HEIGHT_FT / 2) * Math.sin(angleRad);
+  const climberZ = kickerWidthFt + (BOARD_HEIGHT_FT * 0.67) * Math.sin(angleRad);
   const overturningMomentFtLb = boardWeightLb * boardCGZ + climberForceLb * climberZ;
 
-  const totalHorizForceNeeded = overturningMomentFtLb / (boardTopY - kickerFt);
+  // Suspension must provide horizontal force to resist overturning
+  // The horizontal component of chain tension resists the moment
+  // Chain tension decomposed: T_horiz = T * cos(suspAngle), T_vert = T * sin(suspAngle)
+  // where suspAngle is from horizontal
   const numSusp = cfg.numChains;
+  const totalHorizForceNeeded = overturningMomentFtLb / Math.max(boardTopY - kickerFt, 0.1);
+
+  // Chain angle affects how much tension is needed for the required horizontal force
+  // T = F_horiz / cos(angleFromHoriz) — shallower angle = lower tension
+  // But if anchor is above board top, chain pulls UP and IN
+  const cosAngle = Math.abs(suspDZ) / Math.max(suspensionLengthFt, 0.01);
+  const sinAngle = Math.abs(suspDY) / Math.max(suspensionLengthFt, 0.01);
 
   const pullOutPerSusp = totalHorizForceNeeded / numSusp;
-  const verticalPerSusp = totalLoadLb / numSusp;
-  const suspensionTensionLb = Math.sqrt(pullOutPerSusp ** 2 + verticalPerSusp ** 2);
+  // Tension per chain: horizontal component must equal pullOutPerSusp
+  const suspensionTensionLb = cosAngle > 0.01 ? pullOutPerSusp / cosAngle : pullOutPerSusp;
   const suspensionHorizontalLb = pullOutPerSusp;
-  const suspensionVerticalLb = verticalPerSusp;
+  const suspensionVerticalLb = suspensionTensionLb * sinAngle;
 
   let totalSuspensionCapacityLb: number;
   let suspensionSafetyFactor: number;
@@ -354,7 +371,13 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
     warnings.push(`Wall anchor SF is low (${anchorSafetyFactor.toFixed(1)}x). Use through-bolts or add more anchors.`);
   }
 
-  const pointLoadOnStud = climberForceLb;
+  // Stud bending: climber load distributed across adjacent studs via 3/4" plywood
+  // Plywood distributes load over ~2 stud bays on each side of the contact point
+  const studSpacingFt = cfg.studSpacingIn / 12;
+  const distributionWidth = Math.min(4 * studSpacingFt, BOARD_WIDTH_FT); // load spreads ~2 bays each side
+  const studsShareLoad = Math.max(2, Math.ceil(distributionWidth / studSpacingFt));
+  const pointLoadOnStud = climberForceLb / studsShareLoad;
+  // Simply supported stud with center point load (worst case)
   const maxStudBendingMomentFtLb = (pointLoadOnStud * BOARD_HEIGHT_FT) / 4;
   const studBendingStressPsf = maxStudBendingMomentFtLb / sectionMod;
   const studBendingSafetyFactor = ALLOWABLE_BENDING_PSF / Math.max(studBendingStressPsf, 1);
@@ -860,16 +883,41 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
   const studW = frame.width * S;
   const studD = frame.depth * S;
 
-  const postW = SIX_BY_SIX.width * S;
+  const postW = SIX_BY_SIX.width * S; // 6x6 cross-section dimension
+  const kickerH = (cfg.kickerHeightIn / 12) * S; // kicker height off ground
   const fScale = S / 200;
 
+  // Wall stud positions (16" OC, 12' wide wall)
+  const wallStudPositions = useMemo(() => {
+    const wallWidthScene = 12 * S;
+    const studSpaceScene = (16 / 12) * S;
+    const nStuds = Math.floor(wallWidthScene / studSpaceScene) + 1;
+    return Array.from({ length: nStuds }, (_, i) => -wallWidthScene / 2 + i * studSpaceScene);
+  }, []);
+
+  // Chains/arms snap to nearest wall stud positions
   const chainPositions = useMemo(() => {
-    const positions: number[] = [];
+    // Generate ideal evenly-spaced positions across the board
+    const ideal: number[] = [];
     for (let i = 0; i < cfg.numChains; i++) {
-      positions.push(-boardW / 2 + boardW * (i + 0.5) / cfg.numChains);
+      ideal.push(-boardW / 2 + boardW * (i + 0.5) / cfg.numChains);
     }
-    return positions;
-  }, [cfg.numChains, boardW]);
+    // Snap each to nearest wall stud, avoiding duplicates
+    const used = new Set<number>();
+    return ideal.map(ix => {
+      let bestStud = wallStudPositions[0];
+      let bestDist = Infinity;
+      for (const sx of wallStudPositions) {
+        const d = Math.abs(sx - ix);
+        if (d < bestDist && !used.has(sx)) {
+          bestDist = d;
+          bestStud = sx;
+        }
+      }
+      used.add(bestStud);
+      return bestStud;
+    });
+  }, [cfg.numChains, boardW, wallStudPositions]);
 
   return (
     <>
@@ -934,21 +982,21 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
       ))}
 
       {/* === KICKER — single 6x6 x 8' post lying at wall base === */}
-      <mesh position={[0, postW / 2, postW / 2]} rotation={[0, 0, Math.PI / 2]}>
-        <boxGeometry args={[postW, BOARD_WIDTH_FT * S, postW]} />
+      <mesh position={[0, kickerH / 2, postW / 2]} rotation={[0, 0, Math.PI / 2]}>
+        <boxGeometry args={[kickerH, BOARD_WIDTH_FT * S, postW]} />
         <meshStandardMaterial color="#8a6a3a" roughness={0.9} />
       </mesh>
 
       {/* Hinge bolts at kicker front-top edge */}
       {[-boardW / 3, 0, boardW / 3].map((x, i) => (
-        <mesh key={`hinge${i}`} position={[x, postW, postW]} rotation={[0, 0, Math.PI / 2]}>
+        <mesh key={`hinge${i}`} position={[x, kickerH, postW]} rotation={[0, 0, Math.PI / 2]}>
           <cylinderGeometry args={[0.012, 0.012, 0.06, 8]} />
           <meshStandardMaterial color="#888" metalness={0.7} roughness={0.3} />
         </mesh>
       ))}
 
       {/* === BOARD (hinges at kicker front-top edge) === */}
-      <group position={[0, postW, postW]} rotation={[angleRad, 0, 0]}>
+      <group position={[0, kickerH, postW]} rotation={[angleRad, 0, 0]}>
         {/* Plywood face — two 4x8 sheets stacked (seam horizontal at 4') */}
         <mesh position={[0, boardH / 4, 0.001]}>
           <planeGeometry args={[boardW, boardH / 2 - 0.005]} />
@@ -1031,7 +1079,7 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
 
       {/* Full climber model — outside board group so Climber handles wall angle natively */}
       {showClimber && holds.length >= 2 && (
-        <group position={[0, postW, postW]}>
+        <group position={[0, kickerH, postW]}>
           <MoonboardClimberFull holds={holds} boardW={boardW} boardH={boardH}
             climberWeightLb={cfg.climberWeightLb} angleDeg={cfg.angleDeg}
             isPlaying={isPlaying} onComplete={onComplete} onFall={onFall} />
@@ -1047,7 +1095,7 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
 
       {/* === SUSPENSION (chains or 2x6 arms) === */}
       {chainPositions.map((x, i) => {
-        const pivotY = postW;
+        const pivotY = kickerH;
         const pivotZ = postW;
         const boardTopWorldY = pivotY
           + boardH * Math.cos(angleRad)
@@ -1115,7 +1163,7 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
 
       {/* === FORCE ARROWS === */}
       {(() => {
-        const pivotY = postW;
+        const pivotY = kickerH;
         const pivotZ = postW;
         const btY = pivotY + boardH * Math.cos(angleRad) + (studD / 2) * Math.sin(angleRad);
         const btZ = pivotZ + boardH * Math.sin(angleRad) - (studD / 2) * Math.cos(angleRad);
@@ -1154,7 +1202,7 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
               label={`${Math.round(forces.climberForceLb)} lb climber (${cfg.dynamicMultiplier}x)`}
             />
             <ForceArrow
-              from={[boardW / 2 + 0.15, postW / 2, postW / 2]}
+              from={[boardW / 2 + 0.15, kickerH / 2, postW / 2]}
               dir={[0, -1, 0]}
               magnitude={forces.kickerCompressionLb * fScale}
               color="#44cc44"
@@ -1180,7 +1228,7 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
 
       {/* Dimension labels */}
       {(() => {
-        const pivotY = postW;
+        const pivotY = kickerH;
         const pivotZ = postW;
         const btY = pivotY + boardH * Math.cos(angleRad);
         const btZ = pivotZ + boardH * Math.sin(angleRad);
@@ -1207,7 +1255,7 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
         );
       })()}
 
-      <OrbitControls target={[0, postW + boardH * Math.cos(angleRad) * 0.4, postW + boardH * Math.sin(angleRad) * 0.3]} />
+      <OrbitControls target={[0, kickerH + boardH * Math.cos(angleRad) * 0.4, postW + boardH * Math.sin(angleRad) * 0.3]} />
     </>
   );
 }
@@ -1299,7 +1347,12 @@ const DIR_ARROWS: { dir: HoldDirection; label: string; gridArea: string }[] = [
 // ---- Main Page ----
 export default function MoonboardPage({ onBack }: { onBack: () => void }) {
   const [cfg, setCfg] = useState<BoardConfig>(DEFAULT_CONFIG);
-  const update = useCallback((patch: Partial<BoardConfig>) => setCfg(c => ({ ...c, ...patch })), []);
+  const update = useCallback((patch: Partial<BoardConfig>) => setCfg(c => {
+    const next = { ...c, ...patch };
+    // Wall anchors always match number of chains/arms
+    next.numWallAnchors = next.numChains;
+    return next;
+  }), []);
 
   const forces = useMemo(() => computeBoardForces(cfg), [cfg]);
 
@@ -1431,7 +1484,7 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
               </button>
             ))}
           </div>
-          <Slider label={cfg.suspensionType === "chain" ? "Number of Chains" : "Number of Arms"} value={cfg.numChains} min={2} max={8} step={1} unit="" onChange={v => update({ numChains: v })} />
+          <Slider label={cfg.suspensionType === "chain" ? "Number of Chains" : "Number of Arms"} value={cfg.numChains} min={2} max={6} step={1} unit="" onChange={v => update({ numChains: v })} />
           {cfg.suspensionType === "chain" && (
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 8 }}>
               {Object.keys(CHAIN_CAPACITY).map(size => (
@@ -1460,7 +1513,9 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
               </button>
             ))}
           </div>
-          <Slider label="Anchor Points" value={cfg.numWallAnchors} min={2} max={8} step={1} unit="" onChange={v => update({ numWallAnchors: v })} />
+          <div style={{ fontSize: 11, color: "#888" }}>
+            {cfg.numChains} anchor points (1 per {cfg.suspensionType === "chain" ? "chain" : "arm"})
+          </div>
         </div>
 
         <div style={{ background: "#2a2a2a", borderRadius: 10, padding: 12, marginBottom: 12 }}>
