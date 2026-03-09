@@ -1780,7 +1780,7 @@ function SmokePuffs({ origin, scale: s }: { origin: V3; scale: number }) {
   );
 }
 
-function SittingClimber({ scale }: { scale: number }) {
+export function SittingClimber({ scale }: { scale: number }) {
   const s = scale;
   const skinColor = "#ddbbaa";
   const torsoColor = "#5588aa";

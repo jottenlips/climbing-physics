@@ -1,10 +1,10 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { Canvas, ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, Line, Text } from "@react-three/drei";
 import * as THREE from "three";
-import { HoldType, HoldDirection, HoldUsage, HOLD_INFO, holdToPullHand, holdToPullFoot } from "../holds/holdTypes";
-import { ClimberConfig, computeForces as computeClimberForces } from "../physics/climbingPhysics";
-import { Climber } from "./ClimbingScene";
+import { HoldType, HoldDirection, HoldUsage, HOLD_INFO, holdToPullHand, holdToPullFoot, PlacedHold, StartHolds, planRoute } from "../holds/holdTypes";
+import { ClimberConfig, PullDirection, computeForces as computeClimberForces } from "../physics/climbingPhysics";
+import { Climber, SittingClimber } from "./ClimbingScene";
 
 // ---- Moonboard Hold ----
 interface MoonboardHold {
@@ -412,92 +412,371 @@ function holdToLocal(row: number, col: number, boardW: number, boardH: number): 
   };
 }
 
-// ---- Moonboard Climber (wraps full Climber from ClimbingScene) ----
-function MoonboardClimberFull({ holds, boardW, boardH, climberWeightLb, angleDeg }: {
+// ---- Convert MoonboardHolds to PlacedHolds for planRoute ----
+function mbHoldsToPlaced(holds: MoonboardHold[], boardW: number, boardH: number): PlacedHold[] {
+  return holds.map(h => {
+    const pos = holdToLocal(h.row, h.col, boardW, boardH);
+    return { id: h.id, x: pos.x, y: pos.y, type: h.type, direction: h.direction, usage: h.usage };
+  });
+}
+
+// ---- Climber state for animation ----
+interface MBClimberState {
+  lhX: number; lhY: number;
+  rhX: number; rhY: number;
+  lfX: number; lfY: number;
+  rfX: number; rfY: number;
+  bodyRotationDeg: number;
+  hipOffset: number;
+  torsoOffset: number;
+  leftKneeTurnDeg: number;
+  rightKneeTurnDeg: number;
+  leftHandPull: PullDirection;
+  rightHandPull: PullDirection;
+  leftFootPull: PullDirection;
+  rightFootPull: PullDirection;
+  leftHandOn: boolean;
+  rightHandOn: boolean;
+  leftFootOn: boolean;
+  rightFootOn: boolean;
+}
+
+function limbXKey(limb: string): keyof MBClimberState {
+  return limb === "leftHand" ? "lhX" : limb === "rightHand" ? "rhX" : limb === "leftFoot" ? "lfX" : "rfX";
+}
+function limbYKey(limb: string): keyof MBClimberState {
+  return limb === "leftHand" ? "lhY" : limb === "rightHand" ? "rhY" : limb === "leftFoot" ? "lfY" : "rfY";
+}
+function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
+function easeInOut(t: number) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; }
+function easeOut(t: number) { return 1 - (1 - t) * (1 - t); }
+
+// ---- Moonboard Climber (wraps full Climber with animation) ----
+// Matches main app's animation system from App.tsx
+function MoonboardClimberFull({ holds, boardW, boardH, climberWeightLb, angleDeg, isPlaying, onComplete, onFall }: {
   holds: MoonboardHold[];
   boardW: number;
   boardH: number;
   climberWeightLb: number;
   angleDeg: number;
+  isPlaying: boolean;
+  onComplete: () => void;
+  onFall: (reason: string) => void;
 }) {
-  const climberConfig = useMemo(() => {
+  const colToX = useCallback((c: number) => -boardW / 2 + 0.12 + c * (boardW - 0.24) / 10, [boardW]);
+  const isOverhang = angleDeg > 10;
+  const heightFt = 5.75;
+  const apeIndexIn = 72;
+  const gripStrengthKg = 70;
+  const bodyWeightKg = climberWeightLb / 2.20462;
+
+  // Find start holds (lowest 2 hand-usable holds)
+  const startInfo = useMemo(() => {
     const sorted = [...holds].sort((a, b) => a.row - b.row);
-    if (sorted.length < 2) return null;
+    const handUsable = sorted.filter(h => h.usage !== "foot");
+    if (handUsable.length < 2) return null;
+    const lh = handUsable[0];
+    const rh = handUsable[1];
+    const [left, right] = lh.col <= rh.col ? [lh, rh] : [rh, lh];
+    const lhPos = holdToLocal(left.row, left.col, boardW, boardH);
+    const rhPos = holdToLocal(right.row, right.col, boardW, boardH);
+    return { left, right, lhPos, rhPos };
+  }, [holds, boardW, boardH]);
 
-    const handHolds = sorted.filter(h => h.usage !== "foot").slice(-2);
-    if (handHolds.length < 2) return null;
-
-    const lhHold = handHolds[0].col <= handHolds[1].col ? handHolds[0] : handHolds[1];
-    const rhHold = handHolds[0].col <= handHolds[1].col ? handHolds[1] : handHolds[0];
-
-    // Find dedicated foot holds: only holds that are below the hand holds
-    // and not the same holds being used as hands
-    const handIds = new Set([lhHold.id, rhHold.id]);
-    const footCandidates = sorted
-      .filter(h => h.usage !== "hand" && !handIds.has(h.id) && h.row < Math.min(lhHold.row, rhHold.row));
-    const lfHold = footCandidates.length > 0 ? footCandidates[0] : null;
-    const rfHold = footCandidates.length > 1 ? footCandidates[1] : null;
-
-    const lhPos = holdToLocal(lhHold.row, lhHold.col, boardW, boardH);
-    const rhPos = holdToLocal(rhHold.row, rhHold.col, boardW, boardH);
-
-    // Default feet to middle kicker foot chips (cols 4 & 6, y = -0.02)
-    const kickerFootY = -0.02;
-    const colToX = (c: number) => -boardW / 2 + 0.12 + c * (boardW - 0.24) / 10;
-    const lfPos = lfHold
-      ? holdToLocal(lfHold.row, lfHold.col, boardW, boardH)
-      : { x: colToX(4), y: kickerFootY };
-    const rfPos = rfHold
-      ? holdToLocal(rfHold.row, rfHold.col, boardW, boardH)
-      : { x: colToX(6), y: kickerFootY };
-
-    const cogX = (lhPos.x + rhPos.x + lfPos.x + rfPos.x) / 4;
-    const cogY = (lfPos.y + rfPos.y) / 2 + ((lhPos.y + rhPos.y) / 2 - (lfPos.y + rfPos.y) / 2) * 0.45;
-
-    const isOverhang = angleDeg > 10;
-
-    const config: ClimberConfig = {
-      bodyWeightKg: climberWeightLb / 2.20462,
-      gripStrengthKg: 45,
-      heightFt: 5.75,
-      apeIndexIn: 69,
-      wallAngleDeg: 0, // board group handles rotation
+  // Initial climber state: hands on start holds, feet on kicker
+  const initialState = useMemo((): MBClimberState | null => {
+    if (!startInfo) return null;
+    return {
+      lhX: startInfo.lhPos.x, lhY: startInfo.lhPos.y,
+      rhX: startInfo.rhPos.x, rhY: startInfo.rhPos.y,
+      lfX: colToX(4), lfY: -0.02,
+      rfX: colToX(6), rfY: -0.02,
       bodyRotationDeg: 0,
-      leftHandPull: holdToPullHand(lhHold.type, lhHold.direction),
-      rightHandPull: holdToPullHand(rhHold.type, rhHold.direction),
-      leftFootPull: lfHold ? holdToPullFoot(lfHold.type, lfHold.direction, isOverhang) : "smear",
-      rightFootPull: rfHold ? holdToPullFoot(rfHold.type, rfHold.direction, isOverhang) : "smear",
-      leftKneeTurnDeg: 0,
-      rightKneeTurnDeg: 0,
       hipOffset: isOverhang ? 0.25 : 0.4,
       torsoOffset: 0.5,
-      leftHandOn: true,
-      rightHandOn: true,
-      leftFootOn: true,
-      rightFootOn: true,
-      leftHand: lhPos,
-      rightHand: rhPos,
-      leftFoot: lfPos,
-      rightFoot: rfPos,
-      centerOfGravity: { x: cogX, y: cogY },
+      leftKneeTurnDeg: 0, rightKneeTurnDeg: 0,
+      leftHandPull: "down", rightHandPull: "down",
+      leftFootPull: "edge", rightFootPull: "edge",
+      leftHandOn: true, rightHandOn: true,
+      leftFootOn: true, rightFootOn: true,
     };
-    return config;
-  }, [holds, boardW, boardH, climberWeightLb, angleDeg]);
+  }, [startInfo, isOverhang, colToX]);
 
-  const climberForces = useMemo(() => {
-    if (!climberConfig) return null;
-    // Compute forces with actual wall angle for realistic physics
-    const configWithAngle = { ...climberConfig, wallAngleDeg: angleDeg };
-    return computeClimberForces(configWithAngle);
-  }, [climberConfig, angleDeg]);
+  const [cState, setCState] = useState<MBClimberState | null>(null);
+  const simRef = useRef<number | null>(null);
+  const snapRef = useRef<MBClimberState | null>(null);
+  const stateRef = useRef<MBClimberState | null>(null);
+  const fatigueRef = useRef({ left: 0, right: 0 });
 
-  if (!climberConfig || !climberForces) return null;
+  // Keep stateRef current
+  useEffect(() => { stateRef.current = cState; }, [cState]);
 
-  // Render climber with wallAngleDeg=0 so it sits flat on board surface
-  // (the board group rotation handles the overhang)
-  const renderForces = computeClimberForces(climberConfig);
+  // Reset to initial when not playing
+  useEffect(() => {
+    if (!isPlaying && initialState) {
+      setCState(initialState);
+      fatigueRef.current = { left: 0, right: 0 };
+    }
+  }, [isPlaying, initialState]);
 
-  return <Climber config={climberConfig} forces={renderForces} />;
+  // Initialize on mount
+  useEffect(() => {
+    if (!cState && initialState) setCState(initialState);
+  }, [initialState, cState]);
+
+  // Stable callback refs to avoid effect re-triggering
+  const onCompleteRef = useRef(onComplete);
+  const onFallRef = useRef(onFall);
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
+  useEffect(() => { onFallRef.current = onFall; }, [onFall]);
+
+  // Run animation when isPlaying changes to true
+  useEffect(() => {
+    if (!isPlaying || !startInfo || !initialState) return;
+
+    // Reset to start position
+    setCState(initialState);
+    snapRef.current = { ...initialState };
+    fatigueRef.current = { left: 0, right: 0 };
+
+    // Convert holds to PlacedHold format for planRoute
+    const placed = mbHoldsToPlaced(holds, boardW, boardH);
+    const lhPlaced: PlacedHold = { id: startInfo.left.id, x: startInfo.lhPos.x, y: startInfo.lhPos.y,
+      type: startInfo.left.type, direction: startInfo.left.direction, usage: startInfo.left.usage };
+    const rhPlaced: PlacedHold = { id: startInfo.right.id, x: startInfo.rhPos.x, y: startInfo.rhPos.y,
+      type: startInfo.right.type, direction: startInfo.right.direction, usage: startInfo.right.usage };
+    const sh: StartHolds = { leftHand: lhPlaced, rightHand: rhPlaced };
+
+    const moves = planRoute(placed, angleDeg, sh);
+    if (moves.length === 0) { onCompleteRef.current(); return; }
+
+    let currentMoveIdx = 0;
+    let stopped = false;
+    const moveStartTime = performance.now();
+
+    // Schedule timing for each move (matching main app: setup=50ms pause, regular=150ms)
+    const schedule: { start: number; duration: number; pause: number }[] = [];
+    let cumTime = 0;
+    for (const m of moves) {
+      const pause = m.isSetup ? 50 : 150;
+      schedule.push({ start: cumTime, duration: m.duration, pause });
+      cumTime += m.duration + pause;
+    }
+
+    // Fatigue cost per hold type (matching main app)
+    const fatigueCost: Record<string, number> = {
+      crimp: 15, sloper: 12, pinch: 14, pocket: 13, volume: 6, jug: 5,
+      "foot-chip": 3, "foot-edge": 3,
+    };
+    const steepBonus = Math.max(0, angleDeg) * 0.15;
+
+    const animate = (now: number) => {
+      if (stopped) return;
+      const globalElapsed = now - moveStartTime;
+
+      let moveIdx = currentMoveIdx;
+      while (moveIdx < moves.length - 1 &&
+        globalElapsed >= schedule[moveIdx].start + schedule[moveIdx].duration + schedule[moveIdx].pause) {
+        moveIdx++;
+      }
+
+      // Check if done
+      const lastIdx = moves.length - 1;
+      if (moveIdx === lastIdx &&
+        globalElapsed >= schedule[lastIdx].start + schedule[lastIdx].duration + schedule[lastIdx].pause) {
+        stopped = true;
+        onCompleteRef.current();
+        return;
+      }
+
+      // Move transition — capture snap and compute fatigue
+      if (moveIdx !== currentMoveIdx) {
+        const prevMove = moves[currentMoveIdx];
+        currentMoveIdx = moveIdx;
+        setCState(prev => { snapRef.current = prev ? { ...prev } : null; return prev; });
+
+        // Fatigue tracking (matching main app)
+        const m = moves[moveIdx];
+        const isHand = m.limb === "leftHand" || m.limb === "rightHand";
+        if (isHand && !m.isSetup && prevMove) {
+          const cost = (fatigueCost[m.holdType ?? "jug"] ?? 5) + steepBonus;
+          const side = m.limb === "leftHand" ? "left" : "right";
+          const otherSide = side === "left" ? "right" : "left";
+          fatigueRef.current[side] = Math.min(100, fatigueRef.current[side] + cost);
+          fatigueRef.current[otherSide] = Math.max(0, fatigueRef.current[otherSide] - 3); // resting arm recovers
+        }
+      }
+
+      const m = moves[moveIdx];
+      const moveElapsed = globalElapsed - schedule[moveIdx].start;
+      const rawT = Math.min(1, moveElapsed / m.duration);
+      const snap = snapRef.current;
+      if (!snap) { simRef.current = requestAnimationFrame(animate); return; }
+
+      const kx = limbXKey(m.limb);
+      const ky = limbYKey(m.limb);
+      const fromX = snap[kx] as number;
+      const fromY = snap[ky] as number;
+      const toX = m.targetX;
+      const toY = m.targetY;
+      const bodyT = easeInOut(Math.min(1, rawT * 1.2));
+      const isHand = m.limb === "leftHand" || m.limb === "rightHand";
+
+      // Reach check (matching main app)
+      if (!m.isSetup && rawT > 0.1 && rawT < 0.3) {
+        const footMidX = (snap.lfX + snap.rfX) / 2;
+        const footMidY = (snap.lfY + snap.rfY) / 2;
+        if (isHand) {
+          const sx = footMidX + (m.limb === "leftHand" ? -0.15 : 0.15);
+          const sy = footMidY + 0.75;
+          const armReach = (apeIndexIn / 2) * 0.0254 * (heightFt / 5.75);
+          if (Math.sqrt((toX - sx) ** 2 + (toY - sy) ** 2) > armReach * 1.2) {
+            stopped = true; onFallRef.current("reach"); return;
+          }
+        } else {
+          // Leg reach check
+          const hipMidY = (snap.lhY + snap.rhY + snap.lfY + snap.rfY) / 4;
+          const legReach = 0.95 * (heightFt / 5.75);
+          if (Math.sqrt((toX - fromX) ** 2 + (toY - hipMidY) ** 2) > legReach * 1.2) {
+            stopped = true; onFallRef.current("reach"); return;
+          }
+        }
+      }
+
+      // Grip check using torque physics (matching main app)
+      if (!m.isSetup && isHand && rawT > 0.85) {
+        const s = stateRef.current;
+        if (s) {
+          const cogX = (s.lfX + s.rfX) / 2 + ((s.lhX + s.rhX) / 2 - (s.lfX + s.rfX) / 2) * 0.55;
+          const cogY = (s.lfY + s.rfY) / 2 + ((s.lhY + s.rhY) / 2 - (s.lfY + s.rfY) / 2) * 0.55;
+          const liveConfig: ClimberConfig = {
+            bodyWeightKg, gripStrengthKg, heightFt, apeIndexIn,
+            bodyRotationDeg: s.bodyRotationDeg,
+            wallAngleDeg: angleDeg, // actual wall angle for physics
+            leftHandPull: s.leftHandPull, rightHandPull: s.rightHandPull,
+            leftFootPull: s.leftFootPull, rightFootPull: s.rightFootPull,
+            leftKneeTurnDeg: s.leftKneeTurnDeg, rightKneeTurnDeg: s.rightKneeTurnDeg,
+            hipOffset: s.hipOffset, torsoOffset: s.torsoOffset,
+            leftHandOn: true, rightHandOn: true,
+            leftFootOn: true, rightFootOn: true,
+            leftHand: { x: s.lhX, y: s.lhY }, rightHand: { x: s.rhX, y: s.rhY },
+            leftFoot: { x: s.lfX, y: s.lfY }, rightFoot: { x: s.rfX, y: s.rfY },
+            centerOfGravity: { x: cogX, y: cogY },
+          };
+          const result = computeClimberForces(liveConfig);
+          // Fatigue reduces effective grip
+          const side = m.limb === "leftHand" ? "left" : "right";
+          const fatigueMult = 1 - fatigueRef.current[side] / 250;
+          if (!result.canHold || result.gripStrengthPercentUsed > 100 * fatigueMult) {
+            stopped = true; onFallRef.current("grip"); return;
+          }
+        }
+      }
+
+      // Limb arc animation (matching main app 4-phase timing)
+      let limbT: number;
+      let limbArcOffset = 0;
+      if (m.isSetup) {
+        limbT = easeInOut(rawT);
+      } else if (rawT < 0.15) {
+        // Phase 1: no limb movement (weight shift only)
+        limbT = 0;
+      } else if (rawT < 0.25) {
+        // Phase 2: limb starts lifting
+        const phaseT = (rawT - 0.15) / 0.1;
+        limbT = easeOut(phaseT) * 0.05;
+        limbArcOffset = phaseT * m.arcHeight * 0.5;
+      } else if (rawT < 0.85) {
+        // Phase 3: main reach with full arc
+        const phaseT = (rawT - 0.25) / 0.6;
+        limbT = 0.05 + easeInOut(phaseT) * 0.85;
+        limbArcOffset = Math.sin(phaseT * Math.PI) * m.arcHeight;
+      } else {
+        // Phase 4: landing approach
+        const phaseT = (rawT - 0.85) / 0.15;
+        limbT = 0.9 + easeOut(phaseT) * 0.1;
+        limbArcOffset = (1 - easeOut(phaseT)) * m.arcHeight * 0.15;
+      }
+
+      const currentLimbX = lerp(fromX, toX, limbT);
+      const currentLimbY = lerp(fromY, toY, limbT);
+
+      const pullKey = m.limb === "leftHand" ? "leftHandPull"
+        : m.limb === "rightHand" ? "rightHandPull"
+        : m.limb === "leftFoot" ? "leftFootPull" : "rightFootPull";
+      const pullDir = m.holdType
+        ? (isHand ? holdToPullHand(m.holdType, m.holdDirection) : holdToPullFoot(m.holdType, m.holdDirection, isOverhang))
+        : null;
+
+      // Weight shift anticipation (matching main app)
+      let anticipationTwist = 0;
+      let anticipationHipShift = 0;
+      if (!m.isSetup && isHand && rawT < 0.15) {
+        const antiT = easeInOut(rawT / 0.15);
+        const reachDir = toX - fromX;
+        anticipationTwist = -reachDir * 25 * antiT;
+        anticipationHipShift = -reachDir * 0.08 * antiT;
+      }
+
+      const arcTorsoBonus = isHand ? limbArcOffset * 0.15 : 0;
+
+      setCState(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          [kx]: currentLimbX + anticipationHipShift,
+          [ky]: currentLimbY,
+          bodyRotationDeg: rawT < 0.15
+            ? snap.bodyRotationDeg + anticipationTwist
+            : lerp(snap.bodyRotationDeg, m.bodyTwist, bodyT),
+          hipOffset: Math.min(1, lerp(snap.hipOffset, m.hipOffset, bodyT)),
+          torsoOffset: Math.min(1, lerp(snap.torsoOffset, m.torsoOffset, bodyT) + arcTorsoBonus),
+          leftKneeTurnDeg: lerp(snap.leftKneeTurnDeg, m.leftKneeTurn, bodyT),
+          rightKneeTurnDeg: lerp(snap.rightKneeTurnDeg, m.rightKneeTurn, bodyT),
+          leftHandOn: true, rightHandOn: true,
+          leftFootOn: true, rightFootOn: true,
+          ...(pullDir ? { [pullKey]: pullDir } : {}),
+        };
+      });
+
+      simRef.current = requestAnimationFrame(animate);
+    };
+
+    simRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      stopped = true;
+      if (simRef.current) { cancelAnimationFrame(simRef.current); simRef.current = null; }
+    };
+  // Stable deps only — callbacks use refs, colToX is memoized
+  }, [isPlaying, holds, boardW, boardH, angleDeg, bodyWeightKg, gripStrengthKg, heightFt, apeIndexIn, startInfo, initialState, isOverhang]);
+
+  if (!cState) return null;
+
+  const cogX = (cState.lfX + cState.rfX) / 2 + ((cState.lhX + cState.rhX) / 2 - (cState.lfX + cState.rfX) / 2) * 0.55;
+  const cogY = (cState.lfY + cState.rfY) / 2 + ((cState.lhY + cState.rhY) / 2 - (cState.lfY + cState.rfY) / 2) * 0.55;
+
+  // Render config: wallAngleDeg=0 because board group rotation handles overhang visually
+  // But forces use the actual angle for correct torque physics
+  const config: ClimberConfig = {
+    bodyWeightKg, gripStrengthKg, heightFt, apeIndexIn,
+    wallAngleDeg: angleDeg, // climber is outside board group, handles wall angle natively
+    bodyRotationDeg: cState.bodyRotationDeg,
+    leftHandPull: cState.leftHandPull, rightHandPull: cState.rightHandPull,
+    leftFootPull: cState.leftFootPull, rightFootPull: cState.rightFootPull,
+    leftKneeTurnDeg: cState.leftKneeTurnDeg, rightKneeTurnDeg: cState.rightKneeTurnDeg,
+    hipOffset: cState.hipOffset, torsoOffset: cState.torsoOffset,
+    leftHandOn: cState.leftHandOn, rightHandOn: cState.rightHandOn,
+    leftFootOn: cState.leftFootOn, rightFootOn: cState.rightFootOn,
+    leftHand: { x: cState.lhX, y: cState.lhY },
+    rightHand: { x: cState.rhX, y: cState.rhY },
+    leftFoot: { x: cState.lfX, y: cState.lfY },
+    rightFoot: { x: cState.rfX, y: cState.rfY },
+    centerOfGravity: { x: cogX, y: cogY },
+  };
+
+  const renderForces = computeClimberForces(config);
+  return <Climber config={config} forces={renderForces} />;
 }
 
 // ---- Hold direction arrow ----
@@ -557,12 +836,16 @@ function MoonboardHold3D({ hold, boardW, boardH, onClick, eraserMode }: {
 }
 
 // ---- 3D Visualization ----
-function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode }: {
+function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode, isPlaying, onComplete, onFall, showClimber }: {
   cfg: BoardConfig; forces: BoardForceResult;
   holds: MoonboardHold[];
   onBoardClick?: (row: number, col: number) => void;
   onHoldClick?: (id: string) => void;
   eraserMode?: boolean;
+  isPlaying: boolean;
+  onComplete: () => void;
+  onFall: (reason: string) => void;
+  showClimber: boolean;
 }) {
   const angleRad = (cfg.angleDeg * Math.PI) / 180;
   const S = 0.3;
@@ -744,12 +1027,23 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode 
             onClick={eraserMode ? onHoldClick : undefined} eraserMode={eraserMode} />
         ))}
 
-        {/* Full climber model */}
-        {holds.length >= 2 && (
-          <MoonboardClimberFull holds={holds} boardW={boardW} boardH={boardH}
-            climberWeightLb={cfg.climberWeightLb} angleDeg={cfg.angleDeg} />
-        )}
       </group>
+
+      {/* Full climber model — outside board group so Climber handles wall angle natively */}
+      {showClimber && holds.length >= 2 && (
+        <group position={[0, postW, postW]}>
+          <MoonboardClimberFull holds={holds} boardW={boardW} boardH={boardH}
+            climberWeightLb={cfg.climberWeightLb} angleDeg={cfg.angleDeg}
+            isPlaying={isPlaying} onComplete={onComplete} onFall={onFall} />
+        </group>
+      )}
+
+      {/* Sitting climber smoking under board when toggled off */}
+      {!showClimber && (
+        <group position={[boardW * 0.3, 0, postW + 0.5]} rotation={[0, -Math.PI * 0.3, 0]}>
+          <SittingClimber scale={cfg.climberWeightLb > 200 ? 1.1 : 1.0} />
+        </group>
+      )}
 
       {/* === SUSPENSION (chains or 2x6 arms) === */}
       {chainPositions.map((x, i) => {
@@ -1019,6 +1313,18 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
   const [placingMode, setPlacingMode] = useState(false);
   const [eraserMode, setEraserMode] = useState(false);
   const [holdMark, setHoldMark] = useState<"none" | "start" | "finish">("none");
+  const [showClimber, setShowClimber] = useState(true);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [climbStatus, setClimbStatus] = useState<string | null>(null);
+
+  const handleClimbComplete = useCallback(() => {
+    setIsPlaying(false);
+    setClimbStatus("Topped out!");
+  }, []);
+  const handleClimbFall = useCallback((reason: string) => {
+    setIsPlaying(false);
+    setClimbStatus(reason === "grip" ? "Lost grip - fell!" : reason === "reach" ? "Can't reach - fell!" : `Fell: ${reason}`);
+  }, []);
 
   const handleBoardClick = useCallback((row: number, col: number) => {
     if (!placingMode || eraserMode) return;
@@ -1174,7 +1480,9 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
           <BoardScene cfg={cfg} forces={forces} holds={holds}
             onBoardClick={placingMode ? handleBoardClick : undefined}
             onHoldClick={eraserMode ? handleHoldClick : undefined}
-            eraserMode={eraserMode} />
+            eraserMode={eraserMode}
+            isPlaying={isPlaying} onComplete={handleClimbComplete} onFall={handleClimbFall}
+            showClimber={showClimber} />
         </Canvas>
         {/* Hold placement toolbar */}
         <div style={{ position: "absolute", bottom: 16, left: 16, right: 16,
@@ -1212,6 +1520,28 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
                   </button>
                 ))}
               </>
+            )}
+
+            <span style={{ color: "#555", fontSize: 11 }}>|</span>
+            <button onClick={() => { setShowClimber(!showClimber); if (!showClimber) { setIsPlaying(false); setClimbStatus(null); } }}
+              style={{ border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12,
+                color: "#fff", background: showClimber ? "#cc6633" : "#555" }}>
+              {showClimber ? "Climber ON" : "Climber OFF"}
+            </button>
+            {showClimber && holds.length >= 2 && (
+              <button onClick={() => {
+                if (isPlaying) { setIsPlaying(false); setClimbStatus(null); }
+                else { setClimbStatus(null); setIsPlaying(true); setPlacingMode(false); setEraserMode(false); }
+              }}
+                style={{ border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12,
+                  color: "#fff", background: isPlaying ? "#ff4444" : "#44aa44" }}>
+                {isPlaying ? "Stop" : "Play"}
+              </button>
+            )}
+            {climbStatus && (
+              <span style={{ color: climbStatus.includes("Topped") ? "#44cc44" : "#ff6644", fontSize: 12, fontWeight: 700 }}>
+                {climbStatus}
+              </span>
             )}
 
             <span style={{ color: "#888", fontSize: 11, marginLeft: "auto" }}>{holds.length} holds</span>
