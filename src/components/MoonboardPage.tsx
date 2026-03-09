@@ -179,7 +179,10 @@ const CHAIN_CAPACITY: Record<string, number> = {
 
 type FrameType = "2x6" | "2x4";
 
+type BoardSize = "mini" | "full";
+
 interface BoardConfig {
+  boardSize: BoardSize;
   angleDeg: number;
   studSpacingIn: number;
   climberWeightLb: number;
@@ -196,9 +199,18 @@ interface BoardConfig {
 }
 
 const BOARD_WIDTH_FT = 8;
-const BOARD_HEIGHT_FT = 8;
+function getBoardHeightFt(size: BoardSize): number {
+  return size === "full" ? 12 : 8;
+}
+function getBoardSheets(size: BoardSize): number {
+  return size === "full" ? 3 : 2;
+}
+function getBoardRows(size: BoardSize): number {
+  return size === "full" ? 25 : 17; // more rows on full board
+}
 
 const DEFAULT_CONFIG: BoardConfig = {
+  boardSize: "mini",
   angleDeg: 40,
   studSpacingIn: 16,
   climberWeightLb: 180,
@@ -256,6 +268,8 @@ function getFrameDims(ft: FrameType) {
 
 function computeBoardForces(cfg: BoardConfig): BoardForceResult {
   const warnings: string[] = [];
+  const BOARD_H_FT = getBoardHeightFt(cfg.boardSize);
+  const numSheets = getBoardSheets(cfg.boardSize);
   const angleRad = (cfg.angleDeg * Math.PI) / 180;
   const kickerFt = cfg.kickerHeightIn / 12;
   const frame = getFrameDims(cfg.frameType);
@@ -263,11 +277,11 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
   const sectionMod = (frame.width * frame.depth ** 2) / 6;
   const momentInertia = (frame.width * frame.depth ** 3) / 12;
 
-  const plywoodVolFt3 = 2 * (4 * 8 * (0.75 / 12));
+  const plywoodVolFt3 = numSheets * (4 * 8 * (0.75 / 12));
   const plywoodWeightLb = plywoodVolFt3 * PLYWOOD_DENSITY_LB_FT3;
 
   const numStuds = Math.floor(BOARD_WIDTH_FT / (cfg.studSpacingIn / 12)) + 1;
-  const studVolEach = frame.width * frame.depth * BOARD_HEIGHT_FT;
+  const studVolEach = frame.width * frame.depth * BOARD_H_FT;
   const railVolEach = frame.width * frame.depth * BOARD_WIDTH_FT;
   const frameWeightLb = (numStuds * studVolEach + 3 * railVolEach) * WOOD_DENSITY_LB_FT3;
 
@@ -282,8 +296,8 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
 
   // Board geometry: hinge at kicker top-front edge, board extends up and out
   const kickerWidthFt = SIX_BY_SIX.width; // 6x6 cross-section = distance from wall to hinge
-  const boardTopY = kickerFt + BOARD_HEIGHT_FT * Math.cos(angleRad);
-  const boardTopZ = kickerWidthFt + BOARD_HEIGHT_FT * Math.sin(angleRad);
+  const boardTopY = kickerFt + BOARD_H_FT * Math.cos(angleRad);
+  const boardTopZ = kickerWidthFt + BOARD_H_FT * Math.sin(angleRad);
   const kickerBaseZ = boardTopZ; // how far out the board extends from wall
 
   // Wall anchor point (on the wall surface, Z ≈ 0)
@@ -307,8 +321,8 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
 
   // Overturning moment about the hinge (kicker base)
   // Board CG and climber position measured as horizontal distance from wall
-  const boardCGZ = kickerWidthFt + (BOARD_HEIGHT_FT / 2) * Math.sin(angleRad);
-  const climberZ = kickerWidthFt + (BOARD_HEIGHT_FT * 0.67) * Math.sin(angleRad);
+  const boardCGZ = kickerWidthFt + (BOARD_H_FT / 2) * Math.sin(angleRad);
+  const climberZ = kickerWidthFt + (BOARD_H_FT * 0.67) * Math.sin(angleRad);
   const overturningMomentFtLb = boardWeightLb * boardCGZ + climberForceLb * climberZ;
 
   // Suspension must provide horizontal force to resist overturning
@@ -378,7 +392,7 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
   const studsShareLoad = Math.max(2, Math.ceil(distributionWidth / studSpacingFt));
   const pointLoadOnStud = climberForceLb / studsShareLoad;
   // Simply supported stud with center point load (worst case)
-  const maxStudBendingMomentFtLb = (pointLoadOnStud * BOARD_HEIGHT_FT) / 4;
+  const maxStudBendingMomentFtLb = (pointLoadOnStud * BOARD_H_FT) / 4;
   const studBendingStressPsf = maxStudBendingMomentFtLb / sectionMod;
   const studBendingSafetyFactor = ALLOWABLE_BENDING_PSF / Math.max(studBendingStressPsf, 1);
 
@@ -386,7 +400,7 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
     warnings.push(`Stud bending SF is low (${studBendingSafetyFactor.toFixed(1)}x). Consider closer stud spacing or 2x6s.`);
   }
 
-  const maxStudDeflectionFt = (pointLoadOnStud * BOARD_HEIGHT_FT ** 3) / (48 * E_MOD_PSF * momentInertia);
+  const maxStudDeflectionFt = (pointLoadOnStud * BOARD_H_FT ** 3) / (48 * E_MOD_PSF * momentInertia);
   const maxStudDeflectionIn = maxStudDeflectionFt * 12;
 
   if (maxStudDeflectionIn > 0.5) {
@@ -428,17 +442,17 @@ function computeBoardForces(cfg: BoardConfig): BoardForceResult {
 }
 
 // ---- Hold grid position to board-local coords ----
-function holdToLocal(row: number, col: number, boardW: number, boardH: number): { x: number; y: number } {
+function holdToLocal(row: number, col: number, boardW: number, boardH: number, maxRows: number = 17): { x: number; y: number } {
   return {
     x: -boardW / 2 + 0.12 + col * (boardW - 0.24) / 10,
-    y: 0.12 + row * (boardH - 0.24) / 17,
+    y: 0.12 + row * (boardH - 0.24) / maxRows,
   };
 }
 
 // ---- Convert MoonboardHolds to PlacedHolds for planRoute ----
-function mbHoldsToPlaced(holds: MoonboardHold[], boardW: number, boardH: number): PlacedHold[] {
+function mbHoldsToPlaced(holds: MoonboardHold[], boardW: number, boardH: number, maxRows: number = 17): PlacedHold[] {
   return holds.map(h => {
-    const pos = holdToLocal(h.row, h.col, boardW, boardH);
+    const pos = holdToLocal(h.row, h.col, boardW, boardH, maxRows);
     return { id: h.id, x: pos.x, y: pos.y, type: h.type, direction: h.direction, usage: h.usage };
   });
 }
@@ -476,7 +490,7 @@ function easeOut(t: number) { return 1 - (1 - t) * (1 - t); }
 
 // ---- Moonboard Climber (wraps full Climber with animation) ----
 // Matches main app's animation system from App.tsx
-function MoonboardClimberFull({ holds, boardW, boardH, climberWeightLb, angleDeg, isPlaying, onComplete, onFall }: {
+function MoonboardClimberFull({ holds, boardW, boardH, climberWeightLb, angleDeg, isPlaying, onComplete, onFall, maxRows }: {
   holds: MoonboardHold[];
   boardW: number;
   boardH: number;
@@ -485,6 +499,7 @@ function MoonboardClimberFull({ holds, boardW, boardH, climberWeightLb, angleDeg
   isPlaying: boolean;
   onComplete: () => void;
   onFall: (reason: string) => void;
+  maxRows: number;
 }) {
   const colToX = useCallback((c: number) => -boardW / 2 + 0.12 + c * (boardW - 0.24) / 10, [boardW]);
   const isOverhang = angleDeg > 10;
@@ -501,8 +516,8 @@ function MoonboardClimberFull({ holds, boardW, boardH, climberWeightLb, angleDeg
     const lh = handUsable[0];
     const rh = handUsable[1];
     const [left, right] = lh.col <= rh.col ? [lh, rh] : [rh, lh];
-    const lhPos = holdToLocal(left.row, left.col, boardW, boardH);
-    const rhPos = holdToLocal(right.row, right.col, boardW, boardH);
+    const lhPos = holdToLocal(left.row, left.col, boardW, boardH, maxRows);
+    const rhPos = holdToLocal(right.row, right.col, boardW, boardH, maxRows);
     return { left, right, lhPos, rhPos };
   }, [holds, boardW, boardH]);
 
@@ -563,7 +578,7 @@ function MoonboardClimberFull({ holds, boardW, boardH, climberWeightLb, angleDeg
     fatigueRef.current = { left: 0, right: 0 };
 
     // Convert holds to PlacedHold format for planRoute
-    const placed = mbHoldsToPlaced(holds, boardW, boardH);
+    const placed = mbHoldsToPlaced(holds, boardW, boardH, maxRows);
     const lhPlaced: PlacedHold = { id: startInfo.left.id, x: startInfo.lhPos.x, y: startInfo.lhPos.y,
       type: startInfo.left.type, direction: startInfo.left.direction, usage: startInfo.left.usage };
     const rhPlaced: PlacedHold = { id: startInfo.right.id, x: startInfo.rhPos.x, y: startInfo.rhPos.y,
@@ -817,14 +832,15 @@ function directionRotationZ(dir: HoldDirection): number {
 }
 
 // ---- Hold 3D rendering ----
-function MoonboardHold3D({ hold, boardW, boardH, onClick, eraserMode }: {
+function MoonboardHold3D({ hold, boardW, boardH, onClick, eraserMode, maxRows = 17 }: {
   hold: MoonboardHold;
   boardW: number;
   boardH: number;
   onClick?: (id: string) => void;
   eraserMode?: boolean;
+  maxRows?: number;
 }) {
-  const pos = holdToLocal(hold.row, hold.col, boardW, boardH);
+  const pos = holdToLocal(hold.row, hold.col, boardW, boardH, maxRows);
   const info = HOLD_INFO[hold.type];
   const baseColor = eraserMode ? "#ff4444" : info.color;
   const ringColor = hold.isStart ? "#00ff00" : hold.isFinish ? "#ff0000" : undefined;
@@ -874,7 +890,10 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
   const S = 0.3;
   const frame = getFrameDims(cfg.frameType);
 
-  const boardH = BOARD_HEIGHT_FT * S;
+  const BOARD_H_FT = getBoardHeightFt(cfg.boardSize);
+  const numSheets = getBoardSheets(cfg.boardSize);
+  const maxRows = getBoardRows(cfg.boardSize);
+  const boardH = BOARD_H_FT * S;
   const boardW = BOARD_WIDTH_FT * S;
   const ceilH = cfg.ceilingHeightFt * S;
 
@@ -997,16 +1016,23 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
 
       {/* === BOARD (hinges at kicker front-top edge) === */}
       <group position={[0, kickerH, postW]} rotation={[angleRad, 0, 0]}>
-        {/* Plywood face — two 4x8 sheets stacked (seam horizontal at 4') */}
-        <mesh position={[0, boardH / 4, 0.001]}>
-          <planeGeometry args={[boardW, boardH / 2 - 0.005]} />
-          <meshStandardMaterial color="#d4a85c" roughness={0.7} side={THREE.DoubleSide} />
-        </mesh>
-        <mesh position={[0, boardH * 3 / 4, 0.001]}>
-          <planeGeometry args={[boardW, boardH / 2 - 0.005]} />
-          <meshStandardMaterial color="#cda055" roughness={0.7} side={THREE.DoubleSide} />
-        </mesh>
-        <Line points={[[-boardW / 2, boardH / 2, 0.003], [boardW / 2, boardH / 2, 0.003]]} color="#9a7a4a" lineWidth={1.5} />
+        {/* Plywood sheets (4'x8' each, stacked vertically) */}
+        {Array.from({ length: numSheets }).map((_, si) => {
+          const sheetH = boardH / numSheets;
+          const cy = sheetH * (si + 0.5);
+          const colors = ["#d4a85c", "#cda055", "#c89a50"];
+          return (
+            <mesh key={`ply${si}`} position={[0, cy, 0.001]}>
+              <planeGeometry args={[boardW, sheetH - 0.005]} />
+              <meshStandardMaterial color={colors[si % colors.length]} roughness={0.7} side={THREE.DoubleSide} />
+            </mesh>
+          );
+        })}
+        {/* Plywood seam lines */}
+        {Array.from({ length: numSheets - 1 }).map((_, si) => {
+          const seamY = boardH * (si + 1) / numSheets;
+          return <Line key={`seam${si}`} points={[[-boardW / 2, seamY, 0.003], [boardW / 2, seamY, 0.003]]} color="#9a7a4a" lineWidth={1.5} />;
+        })}
 
         {/* Frame studs */}
         {Array.from({ length: numStuds }).map((_, i) => {
@@ -1019,19 +1045,17 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
           );
         })}
 
-        {/* Rails */}
-        <mesh position={[0, boardH - studW / 2, -(studD / 2 + 0.002)]}>
-          <boxGeometry args={[boardW, studW, studD]} />
-          <meshStandardMaterial color="#b88a4c" roughness={0.85} />
-        </mesh>
-        <mesh position={[0, boardH / 2, -(studD / 2 + 0.002)]}>
-          <boxGeometry args={[boardW, studW, studD]} />
-          <meshStandardMaterial color="#b88a4c" roughness={0.85} />
-        </mesh>
-        <mesh position={[0, studW / 2, -(studD / 2 + 0.002)]}>
-          <boxGeometry args={[boardW, studW, studD]} />
-          <meshStandardMaterial color="#b88a4c" roughness={0.85} />
-        </mesh>
+        {/* Rails — top, bottom, and at each plywood seam */}
+        {(() => {
+          const railYs = [studW / 2, boardH - studW / 2];
+          for (let si = 1; si < numSheets; si++) railYs.push(boardH * si / numSheets);
+          return railYs.map((ry, i) => (
+            <mesh key={`rail${i}`} position={[0, ry, -(studD / 2 + 0.002)]}>
+              <boxGeometry args={[boardW, studW, studD]} />
+              <meshStandardMaterial color="#b88a4c" roughness={0.85} />
+            </mesh>
+          ));
+        })()}
 
         {/* Kicker foot chips — row of small footholds along bottom edge */}
         {Array.from({ length: 11 }).map((_, col) => {
@@ -1052,9 +1076,9 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
         })}
 
         {/* T-nut grid — clickable */}
-        {Array.from({ length: 18 }).map((_, row) =>
+        {Array.from({ length: maxRows + 1 }).map((_, row) =>
           Array.from({ length: 11 }).map((_, col) => {
-            const p = holdToLocal(row, col, boardW, boardH);
+            const p = holdToLocal(row, col, boardW, boardH, maxRows);
             const hasHold = holds.some(h => h.row === row && h.col === col);
             return (
               <mesh key={`tn${row}-${col}`} position={[p.x, p.y, 0.004]}
@@ -1072,7 +1096,7 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
         {/* Placed holds */}
         {holds.map(h => (
           <MoonboardHold3D key={h.id} hold={h} boardW={boardW} boardH={boardH}
-            onClick={eraserMode ? onHoldClick : undefined} eraserMode={eraserMode} />
+            onClick={eraserMode ? onHoldClick : undefined} eraserMode={eraserMode} maxRows={maxRows} />
         ))}
 
       </group>
@@ -1082,7 +1106,7 @@ function BoardScene({ cfg, forces, holds, onBoardClick, onHoldClick, eraserMode,
         <group position={[0, kickerH, postW]}>
           <MoonboardClimberFull holds={holds} boardW={boardW} boardH={boardH}
             climberWeightLb={cfg.climberWeightLb} angleDeg={cfg.angleDeg}
-            isPlaying={isPlaying} onComplete={onComplete} onFall={onFall} />
+            isPlaying={isPlaying} onComplete={onComplete} onFall={onFall} maxRows={maxRows} />
         </group>
       )}
 
@@ -1417,9 +1441,21 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
           <h2 style={{ color: "#cc6633", fontSize: 18, margin: 0 }}>Moonboard Builder</h2>
         </div>
 
-        {/* Board info */}
-        <div style={{ background: "#1a2a1a", border: "1px solid #446644", borderRadius: 10, padding: 10, marginBottom: 12, fontSize: 11, color: "#aaccaa" }}>
-          Fixed: 2x 4'x8' sheets of 3/4" plywood (8' x 8' board)
+        {/* Board size toggle */}
+        <div style={{ background: "#2a2a2a", borderRadius: 10, padding: 12, marginBottom: 12 }}>
+          <div style={{ color: "#cc6633", fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Board Size</div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+            {(["mini", "full"] as BoardSize[]).map(s => (
+              <button key={s} onClick={() => update({ boardSize: s })}
+                style={{ ...pill, padding: "5px 14px", fontSize: 12,
+                  background: cfg.boardSize === s ? "#cc6633" : "#444" }}>
+                {s === "mini" ? "Mini (8'x8')" : "Full (8'x12')"}
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: "#aaccaa" }}>
+            {getBoardSheets(cfg.boardSize)}x 4'x8' sheets of 3/4" plywood ({BOARD_WIDTH_FT}' x {getBoardHeightFt(cfg.boardSize)}' board)
+          </div>
         </div>
 
         {/* Preset Routes */}
@@ -1716,9 +1752,9 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
         <div style={{ background: "#2a2a2a", borderRadius: 10, padding: 12 }}>
           <div style={{ color: "#cc6633", fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Materials List</div>
           <div style={{ fontSize: 11, color: "#ccc", lineHeight: 1.8 }}>
-            <div>2x sheets 3/4" plywood (4' x 8')</div>
-            <div>{numStuds}x {cfg.frameType}x8' studs</div>
-            <div>3x {cfg.frameType}x8' rails (top, mid, bottom)</div>
+            <div>{getBoardSheets(cfg.boardSize)}x sheets 3/4" plywood (4' x 8')</div>
+            <div>{numStuds}x {cfg.frameType}x{getBoardHeightFt(cfg.boardSize)}' studs</div>
+            <div>{getBoardSheets(cfg.boardSize) + 1}x {cfg.frameType}x8' rails (top, bottom, seams)</div>
             <div>1x 6x6x8' post (kicker)</div>
             {cfg.suspensionType === "chain" ? (
               <>
@@ -1732,6 +1768,11 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
             <div>3" construction screws (box)</div>
             <div>T-nuts + 3/8" bolts for holds</div>
           </div>
+        </div>
+
+        {/* Disclaimer */}
+        <div style={{ background: "#2a1a1a", border: "1px solid #664444", borderRadius: 10, padding: 10, marginTop: 12, fontSize: 10, color: "#cc8888", lineHeight: 1.5 }}>
+          This tool is for planning purposes only. Structural calculations have NOT been verified by a licensed professional engineer. Consult a qualified structural engineer before building.
         </div>
       </div>
     </div>
