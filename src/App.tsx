@@ -1,4 +1,5 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
+import { Routes, Route, useNavigate } from "react-router-dom";
 import ClimbingScene from "./components/ClimbingScene";
 import {
   RagdollPart,
@@ -7,6 +8,7 @@ import {
 } from "./components/ClimbingScene";
 import ForcePanel from "./components/ForcePanel";
 import MultiPitchPage from "./components/MultiPitchPage";
+import MoonboardPage from "./components/MoonboardPage";
 import {
   ClimberConfig,
   PullDirection,
@@ -779,14 +781,29 @@ function getSharedRouteFromURL(): {
 // Bottom sheet panel types
 type PanelType = "none" | "routes" | "holds" | "settings" | "forces";
 
+function MultiPitchRoute() {
+  const navigate = useNavigate();
+  return <MultiPitchPage onBack={() => navigate("/")} />;
+}
+
+function MoonboardRoute() {
+  const navigate = useNavigate();
+  return <MoonboardPage onBack={() => navigate("/")} />;
+}
+
+function MainRoute() {
+  const navigate = useNavigate();
+  return <MainPage onMultiPitch={() => navigate("/game")} />;
+}
+
 function App() {
-  const [page, setPage] = useState<"main" | "multipitch">("main");
-
-  if (page === "multipitch") {
-    return <MultiPitchPage onBack={() => setPage("main")} />;
-  }
-
-  return <MainPage onMultiPitch={() => setPage("multipitch")} />;
+  return (
+    <Routes>
+      <Route path="/" element={<MainRoute />} />
+      <Route path="/game" element={<MultiPitchRoute />} />
+      <Route path="/moonboard" element={<MoonboardRoute />} />
+    </Routes>
+  );
 }
 
 function MainPage({ onMultiPitch }: { onMultiPitch: () => void }) {

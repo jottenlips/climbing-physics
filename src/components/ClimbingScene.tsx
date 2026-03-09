@@ -13,38 +13,38 @@ import { PlacedHold, HoldDirection, HOLD_INFO } from "../holds/holdTypes";
 const FORCE_SCALE = 0.003;
 const HOLD_OFFSET = 0.02;
 
-type V3 = [number, number, number];
+export type V3 = [number, number, number];
 
-function v3add(a: V3, b: V3): V3 {
+export function v3add(a: V3, b: V3): V3 {
   return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 }
-function v3sub(a: V3, b: V3): V3 {
+export function v3sub(a: V3, b: V3): V3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
-function v3scale(a: V3, s: number): V3 {
+export function v3scale(a: V3, s: number): V3 {
   return [a[0] * s, a[1] * s, a[2] * s];
 }
-function v3len(a: V3): number {
+export function v3len(a: V3): number {
   return Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
 }
-function v3normalize(a: V3): V3 {
+export function v3normalize(a: V3): V3 {
   const l = v3len(a) || 1;
   return [a[0] / l, a[1] / l, a[2] / l];
 }
-function v3cross(a: V3, b: V3): V3 {
+export function v3cross(a: V3, b: V3): V3 {
   return [
     a[1] * b[2] - a[2] * b[1],
     a[2] * b[0] - a[0] * b[2],
     a[0] * b[1] - a[1] * b[0],
   ];
 }
-function v3dot(a: V3, b: V3): number {
+export function v3dot(a: V3, b: V3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
 // Clamp a target position to be within maxReach of origin.
 // Returns the target if in range, or the closest point at maxReach distance.
-function clampToReach(origin: V3, target: V3, maxReach: number): V3 {
+export function clampToReach(origin: V3, target: V3, maxReach: number): V3 {
   const toTarget = v3sub(target, origin);
   const dist = v3len(toTarget);
   if (dist <= maxReach) return target;
@@ -54,7 +54,7 @@ function clampToReach(origin: V3, target: V3, maxReach: number): V3 {
 
 // 2-bone IK: given origin, target, bone lengths, and a preferred bend direction,
 // returns the joint (elbow/knee) position.
-function solveIK2Bone(
+export function solveIK2Bone(
   origin: V3,
   target: V3,
   lenUpper: number,
@@ -133,7 +133,7 @@ function ArrowLine({
   );
 }
 
-function Joint({
+export function Joint({
   position,
   size = 0.025,
   color = "#ddccbb",
@@ -150,7 +150,7 @@ function Joint({
   );
 }
 
-function Limb({
+export function Limb({
   from,
   to,
   color = "#cc9977",
@@ -394,7 +394,7 @@ function PlacedHold3D({
   }
 }
 
-interface WallSegment {
+export interface WallSegment {
   height: number;
   angleDeg: number;
 }
@@ -500,7 +500,7 @@ function Wall({
 }
 
 // Hand component — fingers curl differently per grip type
-function Hand({
+export function Hand({
   pos,
   wrist,
   pull,
@@ -609,7 +609,7 @@ function Hand({
 }
 
 // Climbing foot — rotates for heel hooks, toe hooks, smears, edging
-function ClimbingFoot({
+export function ClimbingFoot({
   pos,
   ankle,
   pull,
@@ -678,7 +678,7 @@ function ClimbingFoot({
   );
 }
 
-function Climber({
+export function Climber({
   config,
   forces,
   segments,
