@@ -150,6 +150,8 @@ function gradeMultiplier(grade: string): number {
   return LETTER_MULTIPLIER[letter] ?? 1;
 }
 
+const MAX_LIVES = 3;
+
 type PowerUpType = "gummy" | "weed" | "beer" | "chalk";
 interface PowerUp {
   id: string;
@@ -610,15 +612,19 @@ function generatePitch(pitchNumber: number, baseY: number): PitchData {
         });
       }
 
-      // === POWER-UPS — 1-2 per crux, placed on actual holds so they're in the route path ===
+      // === POWER-UPS — 1-2 per crux, placed on central holds so they're always reachable ===
       const powerUpTypes: PowerUpType[] = ["gummy", "weed", "beer", "chalk"];
       const numPowerUps = 1 + Math.floor(rand() * 2);
       const cruxPowerUps: PowerUp[] = [];
-      // Pick random holds from the crux to place power-ups on
-      const eligibleHolds = cruxHolds.filter((h) => h.usage !== "foot");
-      for (let i = 0; i < numPowerUps && eligibleHolds.length > 0; i++) {
-        const pickIdx = Math.floor(rand() * eligibleHolds.length);
-        const pickedHold = eligibleHolds.splice(pickIdx, 1)[0];
+      // Prefer holds near center X and mid-height so they're always attainable
+      const eligibleHolds = cruxHolds
+        .filter((h) => h.usage !== "foot")
+        .sort((a, b) => Math.abs(a.x) - Math.abs(b.x));
+      // Pick from the most central holds
+      const centralHolds = eligibleHolds.slice(0, Math.max(4, Math.ceil(eligibleHolds.length / 2)));
+      for (let i = 0; i < numPowerUps && centralHolds.length > 0; i++) {
+        const pickIdx = Math.floor(rand() * centralHolds.length);
+        const pickedHold = centralHolds.splice(pickIdx, 1)[0];
         cruxPowerUps.push({
           id: makeHoldId(),
           x: pickedHold.x,
@@ -804,13 +810,16 @@ function generateTraversalPitch(pitchNumber: number, baseY: number): PitchData {
     cruxHolds.push(holds[holds.length - 1]);
   }
 
-  // Power-ups
+  // Power-ups — placed on central holds so they're always reachable
   const powerUpTypes: PowerUpType[] = ["gummy", "weed", "beer", "chalk"];
-  const eligibleHolds = cruxHolds.filter((h) => h.usage !== "foot");
+  const eligibleHolds = cruxHolds
+    .filter((h) => h.usage !== "foot")
+    .sort((a, b) => Math.abs(a.x) - Math.abs(b.x));
+  const centralHolds2 = eligibleHolds.slice(0, Math.max(3, Math.ceil(eligibleHolds.length / 2)));
   const cruxPowerUps: PowerUp[] = [];
-  if (eligibleHolds.length > 0) {
-    const pickIdx = Math.floor(rand() * eligibleHolds.length);
-    const pickedHold = eligibleHolds[pickIdx];
+  if (centralHolds2.length > 0) {
+    const pickIdx = Math.floor(rand() * centralHolds2.length);
+    const pickedHold = centralHolds2[pickIdx];
     cruxPowerUps.push({
       id: makeHoldId(),
       x: pickedHold.x,
@@ -888,14 +897,16 @@ function wallSurfacePos(
   wallY: number,
   segments: WallSegment[],
   outwardOffset: number,
-): [number, number, number] {
+): [number, number, number, number] {
   const w = towerSegmentToWorld(x, wallY, segments);
   const ar = (w.angleDeg * Math.PI) / 180;
   // Normal for wall at angle a: (0, -sin(a), cos(a))
+  // 4th element = wall angle in radians for orienting attached objects
   return [
     w.pos[0],
     w.pos[1] - Math.sin(ar) * outwardOffset,
     w.pos[2] + Math.cos(ar) * outwardOffset,
+    ar,
   ];
 }
 
@@ -1610,7 +1621,7 @@ function PowerUpMesh({
     ref.current.rotation.y = t * 2.0;
   });
   return (
-    <group ref={ref} position={[pos[0], pos[1] + 0.15, pos[2] + 0.15]}>
+    <group ref={ref} position={[pos[0], pos[1] + 0.15, pos[2] + 0.15]} scale={[2.5, 2.5, 2.5]}>
       {/* Outer glow ring */}
       <mesh rotation={[Math.PI / 2, 0, 0]}>
         <torusGeometry args={[0.07, 0.008, 8, 20]} />
@@ -1874,9 +1885,12 @@ function PowerUpBurst({
 }
 
 // --- Protection gear (cam/nut placed in crack) ---
-function ProtectionPiece({ position }: { position: [number, number, number] }) {
+function ProtectionPiece({ position }: { position: [number, number, number, number] }) {
+  // 4th element is wall angle in radians — rotate piece to align with wall normal
+  const wallAngle = position[3] || 0;
+  const pos: [number, number, number] = [position[0], position[1], position[2]];
   return (
-    <group position={position}>
+    <group position={pos} rotation={[wallAngle, 0, 0]}>
       {/* Cam lobes */}
       <mesh rotation={[0, 0, Math.PI / 4]}>
         <torusGeometry args={[0.03, 0.008, 6, 8, Math.PI]} />
@@ -2528,6 +2542,7 @@ function FollowCamera({
   climberPos,
   isTraversal,
   traversalDir,
+  ragdollFalling,
 }: {
   targetY: number;
   phase: GamePhase;
@@ -2536,6 +2551,7 @@ function FollowCamera({
   climberPos: [number, number, number];
   isTraversal?: boolean;
   traversalDir?: "left" | "right";
+  ragdollFalling?: boolean;
 }) {
   const ref = useRef<any>(null);
   const cruxCam = useRef<{
@@ -2559,14 +2575,35 @@ function FollowCamera({
           target: [xCenter, climberPos[1] + 0.5, climberPos[2]],
         };
       } else {
+        // Nudge camera out slightly on overhangs so we don't clip through the wall
+        const overhangExtra = Math.max(0, climberPos[2]) * 0.5;
         cruxCam.current = {
-          pos: [climberPos[0] + 2.5, climberPos[1] + 2.0, climberPos[2] + 7.0],
+          pos: [climberPos[0] + 2.2, climberPos[1] + 2.0, climberPos[2] + 6.2 + overhangExtra],
           target: [climberPos[0], climberPos[1] + 0.5, climberPos[2]],
         };
       }
     }
     if (!isCrux) cruxCam.current = null;
     prevPhase.current = phase;
+
+    // During ragdoll final fall: camera tracks the climber down smoothly
+    if (ragdollFalling && cruxCam.current) {
+      const g = cruxCam.current;
+      // Follow climber Y as they fall, with slight lag for drama
+      const fallCamY = targetY + 2.0;
+      const fallTargetY = targetY + 0.5;
+      const fallSmooth = 0.06;
+      camera.position.x += (g.pos[0] * 0.8 - camera.position.x) * fallSmooth;
+      camera.position.y += (fallCamY - camera.position.y) * fallSmooth;
+      camera.position.z += (g.pos[2] + 2.0 - camera.position.z) * fallSmooth;
+      const lx = ref.current.target.x + (g.target[0] - ref.current.target.x) * fallSmooth;
+      const ly = ref.current.target.y + (fallTargetY - ref.current.target.y) * fallSmooth;
+      const lz = ref.current.target.z + (g.target[2] - ref.current.target.z) * fallSmooth;
+      ref.current.target.set(lx, ly, lz);
+      ref.current.object.position.copy(camera.position);
+      ref.current.update();
+      return;
+    }
 
     // During crux: hard-set camera every frame, no lerp, no movement
     if (isCrux && cruxCam.current) {
@@ -2581,24 +2618,27 @@ function FollowCamera({
 
     let goalCamX: number, goalCamY: number, goalCamZ: number;
     let goalTargetX: number, goalTargetY: number, goalTargetZ: number;
-    const smooth = 0.015;
+    // Faster smoothing during auto-climb so camera keeps up
+    const smooth = isAuto ? 0.04 : 0.02;
+
+    // Camera always stays a fixed distance in front of climber
+    const climberZ = climberPos[2];
+    const climberX = climberPos[0];
 
     if (isAuto) {
-      const camDist = 14;
-      goalCamZ = Math.max(2, wallNormalZ * camDist);
-      goalCamX = 5;
-      goalCamY = targetY + wallNormalY * camDist * 0.3 + 5;
-      goalTargetX = 0;
+      goalCamZ = climberZ + 12;
+      goalCamX = climberX + 4;
+      goalCamY = targetY + 4;
+      goalTargetX = climberX;
       goalTargetY = targetY;
-      goalTargetZ = Math.max(0, wallNormalZ * 0.3);
+      goalTargetZ = climberZ;
     } else {
-      const camDist = 8;
-      goalCamZ = Math.max(2, wallNormalZ * camDist);
-      goalCamX = 3.5;
-      goalCamY = targetY + wallNormalY * camDist * 0.3 + 2.5;
-      goalTargetX = 0;
+      goalCamZ = climberZ + 7;
+      goalCamX = climberX + 3;
+      goalCamY = targetY + 2;
+      goalTargetX = climberX;
       goalTargetY = targetY;
-      goalTargetZ = Math.max(0, wallNormalZ * 0.3);
+      goalTargetZ = climberZ;
     }
 
     ref.current.target.x += (goalTargetX - ref.current.target.x) * smooth;
@@ -2751,13 +2791,15 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
   const [fell, setFell] = useState(false);
   const [falling, setFalling] = useState(false);
   const [fallCount, setFallCount] = useState(0);
+  const [lives, setLives] = useState(MAX_LIVES);
+  const [ragdollFalling, setRagdollFalling] = useState(false);
   const [muscleCount, setMuscleCount] = useState(0);
   const [fallOffset, setFallOffset] = useState(0);
   const [ropeAnchors, setRopeAnchors] = useState<[number, number, number][]>(
     [],
   );
   const [protectionPoints, setProtectionPoints] = useState<
-    [number, number, number][]
+    [number, number, number, number][]
   >([]);
   const [protectionYs, setProtectionYs] = useState<number[]>([]); // wall-local Y of each protection
   // Meters climbed (total across all pitches)
@@ -2783,86 +2825,157 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
 
   // Trigger fall animation — catch at last protection or game over if no pro
   const triggerFall = useCallback(() => {
-    if (falling || gameOver) return;
+    if (falling || gameOver || ragdollFalling) return;
     if (debugNoFall) {
       showMessage("Debug: Fall blocked!", 1000);
       return;
     }
     setFalling(true);
     setFell(true);
-    showMessage("FALLING!", 2000);
 
     const newFallCount = fallCount + 1;
     setFallCount(newFallCount);
+    const newLives = lives - 1;
+    setLives(newLives);
+
     const lastProY =
       protectionYs.length > 0 ? protectionYs[protectionYs.length - 1] : null;
-    const hasPro = lastProY !== null && newFallCount < 10;
+    // Can recover as long as lives remain
+    const canRecover = newLives > 0;
 
-    let frame = 0;
-    const startPos = { ...limbPosRef.current };
-    const fallAnim = () => {
-      frame++;
-      const t = frame / 40;
-      setFallOffset(t * t * 4);
+    if (newLives <= 0) {
+      // === FINAL FALL — ragdoll all the way down ===
+      showMessage("NO LIVES LEFT!", 3000);
+      setRagdollFalling(true);
 
-      // Limbs go limp — spread and drop
-      const drop = t * t * 3;
-      setLimbPos(() => ({
-        leftHand: {
-          x: startPos.leftHand.x - t * 0.3,
-          y: startPos.leftHand.y - drop * 0.4,
-        },
-        rightHand: {
-          x: startPos.rightHand.x + t * 0.3,
-          y: startPos.rightHand.y - drop * 0.3,
-        },
-        leftFoot: {
-          x: startPos.leftFoot.x - t * 0.4,
-          y: startPos.leftFoot.y - drop,
-        },
-        rightFoot: {
-          x: startPos.rightFoot.x + t * 0.4,
-          y: startPos.rightFoot.y - drop * 0.9,
-        },
-      }));
+      let frame = 0;
+      const startPos = { ...limbPosRef.current };
+      // Calculate how far climber needs to fall (to ground level)
+      const climberY = Math.max(
+        startPos.leftHand.y, startPos.rightHand.y,
+        startPos.leftFoot.y, startPos.rightFoot.y
+      );
+      const totalFallFrames = Math.max(80, Math.min(200, Math.round(climberY * 12)));
 
-      if (frame < 40) {
-        requestAnimationFrame(fallAnim);
-      } else {
-        setFalling(false);
-        if (hasPro) {
-          // Caught by protection — reset climber to last pro placement
-          const catchY = lastProY - 0.5;
-          setLimbPos({
-            leftHand: { x: -0.2, y: catchY + 0.6 },
-            rightHand: { x: 0.2, y: catchY + 0.8 },
-            leftFoot: { x: -0.15, y: catchY + 0.1 },
-            rightFoot: { x: 0.15, y: catchY + 0.25 },
-          });
-          setFallOffset(0);
-          setFell(false);
-          setSelectedLimb(null);
-          setLimbHolds({
-            leftHand: null,
-            rightHand: null,
-            leftFoot: null,
-            rightFoot: null,
-          });
-          // Partial fatigue recovery from resting on the rope
-          setFatigue((prev) => ({
-            left: Math.max(0, prev.left - 15),
-            right: Math.max(0, prev.right - 15),
-          }));
-          setPhase("crux");
-          showMessage("Caught by protection! Try again.", 2500);
+      const ragdollAnim = () => {
+        frame++;
+        const t = frame / totalFallFrames;
+        const gravity = t * t; // accelerating fall
+
+        // Big fall offset — fall all the way down
+        setFallOffset(gravity * climberY * 2.5);
+
+        // Ragdoll limbs — flail wildly while falling
+        const spin = Math.sin(frame * 0.3) * t;
+        const flail = Math.sin(frame * 0.5) * 0.5 * t;
+        const drop = gravity * climberY;
+        setLimbPos(() => ({
+          leftHand: {
+            x: startPos.leftHand.x - t * 0.8 + flail,
+            y: startPos.leftHand.y - drop * 0.4 + spin * 0.2,
+          },
+          rightHand: {
+            x: startPos.rightHand.x + t * 0.8 - flail,
+            y: startPos.rightHand.y - drop * 0.3 + spin * 0.15,
+          },
+          leftFoot: {
+            x: startPos.leftFoot.x - t * 0.6 + flail * 0.7,
+            y: startPos.leftFoot.y - drop * 1.2,
+          },
+          rightFoot: {
+            x: startPos.rightFoot.x + t * 0.6 - flail * 0.7,
+            y: startPos.rightFoot.y - drop * 1.1 + spin * 0.1,
+          },
+        }));
+
+        if (frame < totalFallFrames) {
+          requestAnimationFrame(ragdollAnim);
         } else {
-          // No protection — ground fall, game over
-          setGameOver(true);
+          // Splat on the ground — spread limbs flat
+          setLimbPos({
+            leftHand: { x: -0.6, y: -0.1 },
+            rightHand: { x: 0.6, y: -0.05 },
+            leftFoot: { x: -0.4, y: -0.3 },
+            rightFoot: { x: 0.4, y: -0.25 },
+          });
+          // Brief pause then show game over
+          setTimeout(() => {
+            setFalling(false);
+            setRagdollFalling(false);
+            setGameOver(true);
+          }, 800);
         }
-      }
-    };
-    requestAnimationFrame(fallAnim);
-  }, [falling, gameOver, showMessage, protectionYs, fallCount, debugNoFall]);
+      };
+      requestAnimationFrame(ragdollAnim);
+    } else {
+      // === Normal fall — caught by protection or short fall ===
+      showMessage(`FALLING! ${"🧗".repeat(newLives)}${"  ".repeat(MAX_LIVES - newLives)}`, 2000);
+
+      let frame = 0;
+      const startPos = { ...limbPosRef.current };
+      const fallAnim = () => {
+        frame++;
+        const t = frame / 40;
+        setFallOffset(t * t * 4);
+
+        // Limbs go limp — spread and drop
+        const drop = t * t * 3;
+        setLimbPos(() => ({
+          leftHand: {
+            x: startPos.leftHand.x - t * 0.3,
+            y: startPos.leftHand.y - drop * 0.4,
+          },
+          rightHand: {
+            x: startPos.rightHand.x + t * 0.3,
+            y: startPos.rightHand.y - drop * 0.3,
+          },
+          leftFoot: {
+            x: startPos.leftFoot.x - t * 0.4,
+            y: startPos.leftFoot.y - drop,
+          },
+          rightFoot: {
+            x: startPos.rightFoot.x + t * 0.4,
+            y: startPos.rightFoot.y - drop * 0.9,
+          },
+        }));
+
+        if (frame < 40) {
+          requestAnimationFrame(fallAnim);
+        } else {
+          setFalling(false);
+          if (canRecover) {
+            // Reset climber to last protection, or crux start if no pro
+            const catchY = lastProY !== null
+              ? lastProY - 0.5
+              : (activeCruxIdx >= 0 ? currentPitch.cruxes[activeCruxIdx].startY : 0);
+            setLimbPos({
+              leftHand: { x: -0.2, y: catchY + 0.6 },
+              rightHand: { x: 0.2, y: catchY + 0.8 },
+              leftFoot: { x: -0.15, y: catchY + 0.1 },
+              rightFoot: { x: 0.15, y: catchY + 0.25 },
+            });
+            setFallOffset(0);
+            setFell(false);
+            setSelectedLimb(null);
+            setLimbHolds({
+              leftHand: null,
+              rightHand: null,
+              leftFoot: null,
+              rightFoot: null,
+            });
+            // Fresh arms after getting caught
+            setFatigue({ left: 0, right: 0 });
+            setPhase("crux");
+            showMessage(`Caught! ${"🧗".repeat(newLives)} Arms pumped!`, 2500);
+          } else {
+            // No protection — game over
+            setGameOver(true);
+          }
+        }
+      };
+      requestAnimationFrame(fallAnim);
+    }
+  }, [falling, gameOver, ragdollFalling, showMessage, protectionYs, fallCount, lives, debugNoFall, activeCruxIdx, currentPitch]);
 
   // Pitch metrics
   const pitchTopY = useMemo(() => {
@@ -3349,7 +3462,7 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
         const reachPenalty =
           reachFraction > 0.7 ? (reachFraction - 0.7) * 20 : 0;
         // Cumulative fatigue: each move adds a small escalating cost (pump builds)
-        const pumpPenalty = Math.min(moveCount * 0.4, 8); // +0.4 per move, caps at +8
+        const pumpPenalty = Math.min(moveCount * 0.7, 14); // +0.7 per move, caps at +14
         const cost = baseCost + reachPenalty + pumpPenalty;
         const steepBonus = Math.max(0, wallAngle) * 0.05;
         const side = limb === "leftHand" ? "left" : "right";
@@ -3358,7 +3471,7 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
           (prev) =>
             ({
               [side]: Math.min(100, prev[side] + cost + steepBonus),
-              [other]: Math.max(0, prev[other] - 8), // resting arm recovers well
+              [other]: Math.max(0, prev[other] - 5), // resting arm recovers modestly
             }) as { left: number; right: number },
         );
 
@@ -3432,14 +3545,129 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
               updated[currentPitchIdx] = p;
               return updated;
             });
-            setFatigue((prev) => ({
-              left: Math.max(0, prev.left - info.fatReduction),
-              right: Math.max(0, prev.right - info.fatReduction),
-            }));
-            showMessage(
-              `${info.emoji} ${info.label}! -${info.fatReduction}% fatigue`,
-              2000,
-            );
+            // Type-specific effects
+            if (pu.type === "chalk") {
+              // Chalk eliminates all pump
+              setFatigue({ left: 0, right: 0 });
+              showMessage(`${info.emoji} Chalked up! Pump reset!`, 2000);
+            } else if (pu.type === "weed") {
+              // Weed grants an extra life
+              setFatigue((prev) => ({
+                left: Math.max(0, prev.left - info.fatReduction),
+                right: Math.max(0, prev.right - info.fatReduction),
+              }));
+              setLives((l) => Math.min(l + 1, MAX_LIVES + 1));
+              showMessage(`${info.emoji} Extra life! Stay high!`, 2000);
+            } else if (pu.type === "beer") {
+              // Beer increases pump — save it for the summit!
+              setFatigue((prev) => ({
+                left: Math.min(100, prev.left + 20),
+                right: Math.min(100, prev.right + 20),
+              }));
+              showMessage(`${info.emoji} No summit beer yet!`, 2000);
+            } else {
+              setFatigue((prev) => ({
+                left: Math.max(0, prev.left - info.fatReduction),
+                right: Math.max(0, prev.right - info.fatReduction),
+              }));
+            }
+
+            // Gummy worms trigger animated muscle-through — auto-climb next 3 holds
+            if (pu.type === "gummy") {
+              showMessage(
+                `${info.emoji} MUSCLE THROUGH! Powering up!`,
+                2500,
+              );
+              // Find next 3 hand holds above current position
+              const lp = limbPosRef.current;
+              const currentHighest = Math.max(lp.leftHand.y, lp.rightHand.y, hold.y);
+              const upHolds = activeCrux.holds
+                .filter((h) => h.y > currentHighest + 0.05 && h.usage !== "foot")
+                .sort((a, b) => a.y - b.y)
+                .slice(0, 3);
+
+              if (upHolds.length > 0) {
+                // Animate through each hold sequentially
+                let step = 0;
+                const startLimbs = { ...limbPosRef.current };
+                const animateStep = () => {
+                  if (step >= upHolds.length) return;
+                  const target = upHolds[step];
+                  const isLeft = step % 2 === 0;
+                  const duration = 12; // frames per move
+                  let frame = 0;
+                  const from = { ...limbPosRef.current };
+
+                  const moveAnim = () => {
+                    frame++;
+                    const t = Math.min(1, frame / duration);
+                    // Smooth easing
+                    const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+                    const handKey = isLeft ? "leftHand" : "rightHand";
+                    const footKey = isLeft ? "leftFoot" : "rightFoot";
+                    setLimbPos((prev) => ({
+                      ...prev,
+                      [handKey]: {
+                        x: from[handKey].x + (target.x + (isLeft ? -0.1 : 0.1) - from[handKey].x) * ease,
+                        y: from[handKey].y + (target.y - from[handKey].y) * ease,
+                      },
+                      [footKey]: {
+                        x: from[footKey].x + (target.x + (isLeft ? -0.1 : 0.1) - from[footKey].x) * ease,
+                        y: from[footKey].y + (target.y - 0.6 - from[footKey].y) * ease,
+                      },
+                    }));
+
+                    if (frame < duration) {
+                      requestAnimationFrame(moveAnim);
+                    } else {
+                      setScore((s) => s + 10);
+                      setMoveCount((c) => c + 1);
+                      step++;
+                      if (step < upHolds.length) {
+                        setTimeout(animateStep, 80);
+                      } else {
+                        // Check if we solved the crux
+                        const finalHold = upHolds[upHolds.length - 1];
+                        if (finalHold.y >= activeCrux.endY - 0.8) {
+                          setPitches((prev) => {
+                            const updated = [...prev];
+                            const p = { ...updated[currentPitchIdx] };
+                            const cruxes = [...p.cruxes];
+                            cruxes[activeCruxIdx] = { ...cruxes[activeCruxIdx], solved: true };
+                            p.cruxes = cruxes;
+                            updated[currentPitchIdx] = p;
+                            return updated;
+                          });
+                          setProtectionPoints((pp) => [
+                            ...pp,
+                            wallSurfacePos(0, activeCrux.endY, allSegments, 0.03),
+                          ]);
+                          setProtectionYs((pp) => [...pp, activeCrux.endY]);
+                          setRopeAnchors((pp) => [
+                            ...pp,
+                            wallSurfacePos(0, activeCrux.endY, allSegments, 0.06),
+                          ]);
+                          setPhase("protection");
+                          setTimeout(() => {
+                            setPhase("idle");
+                            setActiveCruxIdx(-1);
+                          }, 2000);
+                        }
+                      }
+                    }
+                  };
+                  requestAnimationFrame(moveAnim);
+                };
+                // Start the animated sequence after a brief delay
+                setTimeout(animateStep, 300);
+              }
+            } else if (pu.type !== "weed" && pu.type !== "chalk" && pu.type !== "beer") {
+              showMessage(
+                `${info.emoji} ${info.label}! -${info.fatReduction}% fatigue`,
+                2000,
+              );
+            }
             // Spawn burst animation at power-up position
             const puWorld = towerSegmentToWorld(pu.x, pu.y, allSegments);
             setPowerUpBursts((prev) => [
@@ -3713,6 +3941,8 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
     setScore(0);
     setMoveCount(0);
     setFallCount(0);
+    setLives(MAX_LIVES);
+    setRagdollFalling(false);
     setMuscleCount(0);
     setPhase("idle");
     setSelectedLimb(null);
@@ -4189,6 +4419,7 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
             climberPos={climberHarnessPos}
             isTraversal={currentPitch.isTraversal}
             traversalDir={currentPitch.traversalDir}
+            ragdollFalling={ragdollFalling}
           />
         </Canvas>
       </div>
@@ -4216,28 +4447,36 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
         <span style={{ color: "#cc9900" }}>P{currentPitch.pitchNumber}</span>
         <span>{Math.round(pitchProgress)}%</span>
         <span style={{ color: "#aaa" }}>{score}pts</span>
+        <span style={{ letterSpacing: 2 }}>
+          {Array.from({ length: MAX_LIVES }, (_, i) => (
+            <span key={i} style={{ opacity: i < lives ? 1 : 0.2 }}>
+              🧗
+            </span>
+          ))}
+        </span>
       </div>
 
       {/* Stats now consolidated in bottom bar */}
 
-      {/* Message — small, bottom */}
+      {/* Message */}
       {message && (
         <div
           style={{
             position: "absolute",
-            bottom: 80,
+            bottom: 100,
             left: "50%",
             transform: "translateX(-50%)",
             zIndex: 30,
-            background: "rgba(0,0,0,0.4)",
-            color: "#ddb844",
-            padding: "4px 12px",
-            borderRadius: 6,
-            fontSize: 11,
-            fontWeight: 500,
+            background: "rgba(0,0,0,0.75)",
+            color: "#ffdd55",
+            padding: "8px 20px",
+            borderRadius: 10,
+            fontSize: 16,
+            fontWeight: 700,
             pointerEvents: "none",
             whiteSpace: "nowrap",
-            opacity: 0.8,
+            textShadow: "0 1px 4px rgba(0,0,0,0.8)",
+            border: "1px solid rgba(255,200,50,0.3)",
           }}
         >
           {message}
@@ -4302,8 +4541,8 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
             </div>
             <div style={{ color: "#ccc", fontSize: 14, marginBottom: 16 }}>
               {fell
-                ? fallCount >= 10
-                  ? "Too many falls — exhausted!"
+                ? lives <= 0
+                  ? "Out of lives — decked!"
                   : gripUsed > 100
                     ? "Grip strength exceeded"
                     : fatigue.left >= 100 || fatigue.right >= 100
@@ -4758,6 +4997,26 @@ export default function MultiPitchPage({ onBack }: { onBack: () => void }) {
                 />
                 No Fall
               </label>
+              <button
+                onClick={() => triggerFall()}
+                disabled={falling || gameOver || ragdollFalling}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "6px 10px",
+                  marginTop: 6,
+                  borderRadius: 6,
+                  border: "none",
+                  background: falling || gameOver ? "#333" : "#cc2200",
+                  color: "#fff",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: falling || gameOver ? "not-allowed" : "pointer",
+                  opacity: falling || gameOver ? 0.5 : 1,
+                }}
+              >
+                Force Fall ({lives} lives)
+              </button>
               <div style={{ fontSize: 9, color: "#666", marginTop: 6 }}>
                 Muscle: ∞ | Falls: {fallCount}
               </div>
