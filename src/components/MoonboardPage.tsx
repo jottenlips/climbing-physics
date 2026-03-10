@@ -1432,14 +1432,53 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
 
   const numStuds = Math.floor(BOARD_WIDTH_FT / (cfg.studSpacingIn / 12)) + 1;
 
+  // Mobile panel state
+  const [mobileTab, setMobileTab] = useState<"3d" | "config" | "results">("3d");
+  const [windowWidth, setWindowWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 1200);
+  useEffect(() => {
+    const onResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  const isMobile = windowWidth < 768;
+
+  const mobileTabBtn = (tab: "3d" | "config" | "results", label: string) => (
+    <button key={tab} onClick={() => setMobileTab(tab)}
+      style={{ flex: 1, border: "none", padding: "8px 4px", fontSize: 12, fontWeight: 700, cursor: "pointer",
+        color: mobileTab === tab ? "#fff" : "#888",
+        background: mobileTab === tab ? "#cc6633" : "#333",
+        borderBottom: mobileTab === tab ? "2px solid #ff8844" : "2px solid transparent",
+      }}>
+      {label}
+    </button>
+  );
+
   return (
-    <div style={{ width: "100vw", height: "100vh", display: "flex", fontFamily: "system-ui, -apple-system, sans-serif", background: "#1a1a1a" }}>
+    <div style={{ width: "100vw", height: "100vh", display: "flex", flexDirection: isMobile ? "column" : "row",
+      fontFamily: "system-ui, -apple-system, sans-serif", background: "#1a1a1a" }}>
+
+      {/* Mobile tab bar */}
+      {isMobile && (
+        <div style={{ display: "flex", background: "#222", borderBottom: "1px solid #444", flexShrink: 0 }}>
+          <button onClick={onBack} style={{ ...pill, background: "#555", padding: "8px 12px", fontSize: 11, borderRadius: 0 }}>Back</button>
+          {mobileTabBtn("3d", "3D View")}
+          {mobileTabBtn("config", "Config")}
+          {mobileTabBtn("results", "Results")}
+        </div>
+      )}
+
       {/* Left panel — controls */}
-      <div style={{ width: 300, minWidth: 300, height: "100%", overflowY: "auto", padding: 16, background: "#222", borderRight: "1px solid #444" }}>
+      <div style={{ overflowY: "auto", padding: isMobile ? 12 : 16, background: "#222",
+        ...(isMobile
+          ? { flex: 1, display: mobileTab === "config" ? "block" : "none" }
+          : { width: 300, minWidth: 300, height: "100%", borderRight: "1px solid #444" }),
+      }}>
+        {!isMobile && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
           <button onClick={onBack} style={{ ...pill, background: "#555", padding: "6px 12px", fontSize: 12 }}>Back</button>
           <h2 style={{ color: "#cc6633", fontSize: 18, margin: 0 }}>Moonboard Builder</h2>
         </div>
+        )}
 
         {/* Board size toggle */}
         <div style={{ background: "#2a2a2a", borderRadius: 10, padding: 12, marginBottom: 12 }}>
@@ -1566,8 +1605,10 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
       </div>
 
       {/* Center — 3D view */}
-      <div style={{ flex: 1, position: "relative" }}>
-        <Canvas camera={{ position: [5, 2, 5], fov: 50 }} style={{ background: "#1a1a1a" }}>
+      <div style={{ flex: 1, position: "relative",
+        ...(isMobile ? { display: mobileTab === "3d" ? "flex" : "none", flexDirection: "column" as const, minHeight: 0 } : {}),
+      }}>
+        <Canvas camera={{ position: isMobile ? [6, 2.5, 6] : [5, 2, 5], fov: isMobile ? 55 : 50 }} style={{ background: "#1a1a1a", flex: 1 }}>
           <BoardScene cfg={cfg} forces={forces} holds={holds}
             onBoardClick={placingMode ? handleBoardClick : undefined}
             onHoldClick={eraserMode ? handleHoldClick : undefined}
@@ -1576,18 +1617,20 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
             showClimber={showClimber} />
         </Canvas>
         {/* Hold placement toolbar */}
-        <div style={{ position: "absolute", bottom: 16, left: 16, right: 16,
-          background: "rgba(0,0,0,0.85)", borderRadius: 12, padding: "8px 12px" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ position: "absolute", bottom: isMobile ? 4 : 16, left: isMobile ? 4 : 16, right: isMobile ? 4 : 16,
+          background: "rgba(0,0,0,0.9)", borderRadius: isMobile ? 8 : 12, padding: isMobile ? "6px 8px" : "8px 12px" }}>
+          <div style={{ display: "flex", gap: isMobile ? 4 : 8, alignItems: "center", flexWrap: "wrap" }}>
             <button onClick={() => { setPlacingMode(!placingMode); setEraserMode(false); }}
-              style={{ border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12,
+              style={{ border: "none", borderRadius: 8, padding: isMobile ? "5px 8px" : "6px 14px", cursor: "pointer",
+                fontWeight: 600, fontSize: isMobile ? 11 : 12,
                 color: "#fff", background: placingMode ? "#cc6633" : "#555" }}>
-              {placingMode ? "Placing ON" : "Place Holds"}
+              {placingMode ? "Placing" : "Place"}
             </button>
             <button onClick={() => { setEraserMode(!eraserMode); setPlacingMode(false); }}
-              style={{ border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12,
+              style={{ border: "none", borderRadius: 8, padding: isMobile ? "5px 8px" : "6px 14px", cursor: "pointer",
+                fontWeight: 600, fontSize: isMobile ? 11 : 12,
                 color: "#fff", background: eraserMode ? "#ff4444" : "#555" }}>
-              Eraser
+              Erase
             </button>
 
             {placingMode && (
@@ -1596,7 +1639,8 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
                 {/* Hold types */}
                 {(["jug", "crimp", "sloper", "pinch", "pocket", "foot-chip", "foot-edge"] as HoldType[]).map(t => (
                   <button key={t} onClick={() => setSelectedHoldType(t)}
-                    style={{ border: "none", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 10, fontWeight: 600,
+                    style={{ border: "none", borderRadius: 6, padding: isMobile ? "3px 5px" : "4px 8px",
+                      cursor: "pointer", fontSize: isMobile ? 9 : 10, fontWeight: 600,
                       color: "#fff", background: selectedHoldType === t ? HOLD_INFO[t].color : "#444" }}>
                     {HOLD_INFO[t].label}
                   </button>
@@ -1605,7 +1649,8 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
                 {/* Markers */}
                 {(["none", "start", "finish"] as const).map(m => (
                   <button key={m} onClick={() => setHoldMark(m)}
-                    style={{ border: "none", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 10, fontWeight: 600,
+                    style={{ border: "none", borderRadius: 6, padding: isMobile ? "3px 5px" : "4px 8px", cursor: "pointer",
+                      fontSize: isMobile ? 9 : 10, fontWeight: 600,
                       color: "#fff", background: holdMark === m ? (m === "start" ? "#00cc00" : m === "finish" ? "#cc0000" : "#666") : "#444" }}>
                     {m === "none" ? "Normal" : m.charAt(0).toUpperCase() + m.slice(1)}
                   </button>
@@ -1615,16 +1660,18 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
 
             <span style={{ color: "#555", fontSize: 11 }}>|</span>
             <button onClick={() => { setShowClimber(!showClimber); if (!showClimber) { setIsPlaying(false); setClimbStatus(null); } }}
-              style={{ border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12,
+              style={{ border: "none", borderRadius: 8, padding: isMobile ? "5px 8px" : "6px 14px", cursor: "pointer",
+                fontWeight: 600, fontSize: isMobile ? 11 : 12,
                 color: "#fff", background: showClimber ? "#cc6633" : "#555" }}>
-              {showClimber ? "Climber ON" : "Climber OFF"}
+              {showClimber ? "Climber" : "No Climber"}
             </button>
             {showClimber && holds.length >= 2 && (
               <button onClick={() => {
                 if (isPlaying) { setIsPlaying(false); setClimbStatus(null); }
                 else { setClimbStatus(null); setIsPlaying(true); setPlacingMode(false); setEraserMode(false); }
               }}
-                style={{ border: "none", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12,
+                style={{ border: "none", borderRadius: 8, padding: isMobile ? "5px 8px" : "6px 14px", cursor: "pointer",
+                  fontWeight: 600, fontSize: isMobile ? 11 : 12,
                   color: "#fff", background: isPlaying ? "#ff4444" : "#44aa44" }}>
                 {isPlaying ? "Stop" : "Play"}
               </button>
@@ -1635,21 +1682,21 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
               </span>
             )}
 
-            <span style={{ color: "#888", fontSize: 11, marginLeft: "auto" }}>{holds.length} holds</span>
+            <span style={{ color: "#888", fontSize: isMobile ? 10 : 11, marginLeft: "auto" }}>{holds.length} holds</span>
             {holds.length > 0 && (
               <button onClick={() => setHolds([])}
-                style={{ border: "none", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, fontWeight: 600,
-                  color: "#fff", background: "#666" }}>
-                Clear All
+                style={{ border: "none", borderRadius: 6, padding: isMobile ? "3px 6px" : "4px 8px", cursor: "pointer",
+                  fontSize: isMobile ? 10 : 11, fontWeight: 600, color: "#fff", background: "#666" }}>
+                Clear
               </button>
             )}
           </div>
 
           {/* Direction selector (shown when placing) */}
           {placingMode && (
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
-              <span style={{ color: "#888", fontSize: 11 }}>Direction:</span>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 28px)", gridTemplateRows: "repeat(3, 24px)", gap: 2 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, marginTop: isMobile ? 4 : 8 }}>
+              <span style={{ color: "#888", fontSize: isMobile ? 10 : 11 }}>Direction:</span>
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(3, ${isMobile ? 24 : 28}px)`, gridTemplateRows: `repeat(3, ${isMobile ? 20 : 24}px)`, gap: 2 }}>
                 {DIR_ARROWS.map(({ dir, label, gridArea }) => (
                   <button key={dir} onClick={() => setSelectedDirection(dir)}
                     style={{
@@ -1679,7 +1726,11 @@ export default function MoonboardPage({ onBack }: { onBack: () => void }) {
       </div>
 
       {/* Right panel — results */}
-      <div style={{ width: 280, minWidth: 280, height: "100%", overflowY: "auto", padding: 16, background: "#222", borderLeft: "1px solid #444" }}>
+      <div style={{ overflowY: "auto", padding: isMobile ? 12 : 16, background: "#222",
+        ...(isMobile
+          ? { flex: 1, display: mobileTab === "results" ? "block" : "none" }
+          : { width: 280, minWidth: 280, height: "100%", borderLeft: "1px solid #444" }),
+      }}>
         {/* Verdict */}
         <div style={{
           background: forces.safe ? "#1a3a1a" : "#3a1a1a",
