@@ -5,6 +5,7 @@ import {
   RagdollPart,
   explorerKeys,
   explorerPos,
+  deerRiding,
 } from "./components/ClimbingScene";
 import ForcePanel from "./components/ForcePanel";
 import MultiPitchPage from "./components/MultiPitchPage";
@@ -625,15 +626,15 @@ function VirtualJoystick() {
     // Map to keys: up/down = forward/back, left/right = turn
     const normX = dx / RADIUS; // -1 to 1
     const normY = dy / RADIUS; // -1 to 1
-    // Forward/back (Y axis, inverted: up = forward)
-    if (normY < -0.3) explorerKeys.add("arrowup");
+    // Forward/back (Y axis, inverted: up = forward) — larger dead zone for less sensitivity
+    if (normY < -0.5) explorerKeys.add("arrowup");
     else explorerKeys.delete("arrowup");
-    if (normY > 0.3) explorerKeys.add("arrowdown");
+    if (normY > 0.5) explorerKeys.add("arrowdown");
     else explorerKeys.delete("arrowdown");
     // Turn left/right
-    if (normX < -0.3) explorerKeys.add("arrowleft");
+    if (normX < -0.5) explorerKeys.add("arrowleft");
     else explorerKeys.delete("arrowleft");
-    if (normX > 0.3) explorerKeys.add("arrowright");
+    if (normX > 0.5) explorerKeys.add("arrowright");
     else explorerKeys.delete("arrowright");
   }, []);
 
@@ -2028,11 +2029,11 @@ function MainPage({ onMultiPitch }: { onMultiPitch: () => void }) {
             WebkitBackdropFilter: "blur(8px)",
           }}
         >
-          WASD / Arrow keys to walk around
+          WASD / Arrow keys to walk around — walk into a deer to ride it!
         </div>
       )}
 
-      {/* === MOBILE JOYSTICK + PET DOG BUTTON === */}
+      {/* === MOBILE JOYSTICK + PET DOG BUTTON + DISMOUNT === */}
       {isExploring && (
         <>
           <VirtualJoystick />
@@ -2066,6 +2067,36 @@ function MainPage({ onMultiPitch }: { onMultiPitch: () => void }) {
             &#128054;
           </button>
         </>
+      )}
+
+      {/* === DISMOUNT DEER BUTTON === */}
+      {isExploring && deerRiding.active && (
+        <button
+          onClick={() => {
+            deerRiding.active = false;
+            deerRiding.deerIndex = -1;
+          }}
+          style={{
+            position: "absolute",
+            bottom: 220,
+            right: 30,
+            zIndex: 30,
+            padding: "10px 18px",
+            borderRadius: 12,
+            border: "2px solid rgba(255,200,50,0.5)",
+            background: "rgba(80,40,10,0.85)",
+            color: "#ffdd66",
+            fontSize: 15,
+            fontWeight: 700,
+            cursor: "pointer",
+            touchAction: "none",
+            userSelect: "none",
+            backdropFilter: "blur(4px)",
+            WebkitBackdropFilter: "blur(4px)",
+          }}
+        >
+          Dismount Deer
+        </button>
       )}
 
       {/* === SITTING MESSAGE === */}

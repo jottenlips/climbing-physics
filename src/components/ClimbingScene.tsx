@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useRef, useEffect } from "react";
+import { useMemo, useCallback, useRef, useEffect, useState } from "react";
 import { Canvas, ThreeEvent, useFrame } from "@react-three/fiber";
 import { OrbitControls, Line, Sky, Text } from "@react-three/drei";
 import * as THREE from "three";
@@ -2380,7 +2380,7 @@ function CragDog({ isExploring = false }: { isExploring?: boolean }) {
         if (groupRef.current) {
           groupRef.current.position.set(
             dogPosRef.current.x,
-            bounce,
+            getTerrainHeight(dogPosRef.current.x, dogPosRef.current.z) + bounce,
             dogPosRef.current.z,
           );
         }
@@ -2416,7 +2416,7 @@ function CragDog({ isExploring = false }: { isExploring?: boolean }) {
         if (groupRef.current) {
           groupRef.current.position.set(
             dogPosRef.current.x,
-            0,
+            getTerrainHeight(dogPosRef.current.x, dogPosRef.current.z),
             dogPosRef.current.z,
           );
         }
@@ -2435,7 +2435,7 @@ function CragDog({ isExploring = false }: { isExploring?: boolean }) {
         if (groupRef.current) {
           groupRef.current.position.set(
             dogPosRef.current.x,
-            0,
+            getTerrainHeight(dogPosRef.current.x, dogPosRef.current.z),
             dogPosRef.current.z,
           );
         }
@@ -2815,178 +2815,261 @@ function Mountains() {
           />
         </mesh>
       ))}
-      {/* Ground plane */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
-        <planeGeometry args={[200, 200]} />
-        <meshStandardMaterial color="#3a4a35" roughness={1} />
-      </mesh>
-      {/* Distant trees (simple cones) */}
+      {/* Terrain mesh with hills */}
       {useMemo(() => {
-        const trees: JSX.Element[] = [];
-        const rng = (seed: number) => {
-          let s = seed;
-          return () => {
-            s = (s * 16807) % 2147483647;
-            return (s - 1) / 2147483646;
-          };
-        };
-        const rand = rng(42);
-        for (let i = 0; i < 300; i++) {
-          const x = (rand() - 0.5) * 80;
-          const z = i < 160 ? -6 - rand() * 30 : 18 + rand() * 15;
-          const h = 1.5 + rand() * 3;
-          const r = 0.4 + rand() * 0.6;
-          trees.push(
-            <group key={i} position={[x, h * 0.5, z]}>
+        const size = 300;
+        const segs = 120;
+        const geo = new THREE.PlaneGeometry(size, size, segs, segs);
+        geo.rotateX(-Math.PI / 2);
+        const pos = geo.attributes.position;
+        const colors = new Float32Array(pos.count * 3);
+        const grassBase = new THREE.Color("#3a4a35");
+        const grassHigh = new THREE.Color("#4a5a3a");
+        const dirt = new THREE.Color("#5a4a35");
+        const rock = new THREE.Color("#6a6a65");
+        for (let i = 0; i < pos.count; i++) {
+          const x = pos.getX(i);
+          const z = pos.getZ(i);
+          const y = getTerrainHeight(x, z);
+          pos.setY(i, y);
+          // Color by height + slope
+          const c = grassBase.clone();
+          if (y > 2) c.lerp(grassHigh, Math.min(1, (y - 2) / 4));
+          if (y > 5) c.lerp(rock, Math.min(1, (y - 5) / 5));
+          if (y < -0.5) c.lerp(dirt, Math.min(1, (-0.5 - y) / 2));
+          colors[i * 3] = c.r;
+          colors[i * 3 + 1] = c.g;
+          colors[i * 3 + 2] = c.b;
+        }
+        geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+        geo.computeVertexNormals();
+        return (
+          <mesh geometry={geo}>
+            <meshStandardMaterial vertexColors roughness={1} flatShading />
+          </mesh>
+        );
+      }, [])}
+      {/* Trees spread across expanded terrain */}
+      {useMemo(() =>
+        TREE_POSITIONS.map((t, i) => {
+          const terrainY = getTerrainHeight(t.x, t.z);
+          return (
+            <group key={i} position={[t.x, terrainY + t.h * 0.5, t.z]}>
               <mesh>
-                <coneGeometry args={[r, h, 5]} />
+                <coneGeometry args={[t.r, t.h, 5]} />
                 <meshStandardMaterial
-                  color={`hsl(${140 + rand() * 30}, ${25 + rand() * 15}%, ${18 + rand() * 10}%)`}
+                  color={`hsl(${t.hue}, ${t.sat}%, ${t.lit}%)`}
                   roughness={1}
                   flatShading
                 />
               </mesh>
-              <mesh position={[0, -h * 0.35, 0]}>
-                <cylinderGeometry args={[r * 0.12, r * 0.15, h * 0.3, 4]} />
+              <mesh position={[0, -t.h * 0.35, 0]}>
+                <cylinderGeometry args={[t.r * 0.12, t.r * 0.15, t.h * 0.3, 4]} />
                 <meshStandardMaterial color="#3d2b1f" roughness={1} />
               </mesh>
-            </group>,
+            </group>
           );
-        }
-        return trees;
-      }, [])}
+        })
+      , [])}
     </group>
   );
 }
 
 function River() {
+  // Build river center path — use pre-channel terrain so water sits ABOVE the carved ground
   const riverPath = useMemo(() => {
-    // Meandering river path points
     const points: [number, number, number][] = [];
-    for (let i = 0; i <= 40; i++) {
-      const t = i / 40;
-      const x = -25 + t * 50;
-      const z =
-        -12 + Math.sin(t * Math.PI * 2.5) * 3 + Math.cos(t * Math.PI * 1.2) * 2;
-      points.push([x, 0.01, z]);
+    for (let i = 0; i <= 100; i++) {
+      const t = i / 100;
+      const x = -140 + t * 280;
+      const z = getRiverZ(x);
+      const y = getTerrainHeightNoRiver(x, z) - 0.3;
+      points.push([x, y, z]);
     }
     return points;
   }, []);
 
-  const { geometry, leftBank, rightBank } = useMemo(() => {
+  const width = 7.5; // match channel carve width (3.5 radius * 2 + margin)
+  const crossSegs = 8;
+
+  // Build water mesh — every vertex samples terrain at its OWN position
+  const { waterGeo, bedGeo, bankGeoL, bankGeoR, basePositions } = useMemo(() => {
     const verts: number[] = [];
+    const bedVerts: number[] = [];
     const indices: number[] = [];
     const uvs: number[] = [];
-    const width = 1.8;
-    const lBank: [number, number, number][] = [];
-    const rBank: [number, number, number][] = [];
+    const bedUvs: number[] = [];
+    const lBank: number[] = [];
+    const rBank: number[] = [];
+    const row = crossSegs + 1;
 
     for (let i = 0; i < riverPath.length; i++) {
-      const [x, y, z] = riverPath[i];
-      // Get perpendicular direction
-      let dx = 0,
-        dz = 0;
+      const [cx, , cz] = riverPath[i];
+      // Direction along river
+      let ddx = 0, ddz = 0;
       if (i < riverPath.length - 1) {
-        dx = riverPath[i + 1][0] - x;
-        dz = riverPath[i + 1][2] - z;
+        ddx = riverPath[i + 1][0] - cx;
+        ddz = riverPath[i + 1][2] - cz;
       } else {
-        dx = x - riverPath[i - 1][0];
-        dz = z - riverPath[i - 1][2];
+        ddx = cx - riverPath[i - 1][0];
+        ddz = cz - riverPath[i - 1][2];
       }
-      const len = Math.sqrt(dx * dx + dz * dz);
-      const nx = -dz / len;
-      const nz = dx / len;
+      const len = Math.sqrt(ddx * ddx + ddz * ddz);
+      const nx = -ddz / len; // perpendicular
+      const nz = ddx / len;
 
-      const vi = verts.length / 3;
-      verts.push(x + nx * width * 0.5, y, z + nz * width * 0.5);
-      verts.push(x - nx * width * 0.5, y, z - nz * width * 0.5);
-      uvs.push(0, i / riverPath.length);
-      uvs.push(1, i / riverPath.length);
-      lBank.push([x + nx * width * 0.55, 0.005, z + nz * width * 0.55]);
-      rBank.push([x - nx * width * 0.55, 0.005, z - nz * width * 0.55]);
+      for (let c = 0; c <= crossSegs; c++) {
+        const ct = c / crossSegs;
+        const offset = (ct - 0.5) * width;
+        const vx = cx + nx * offset;
+        const vz = cz + nz * offset;
+        // Use PRE-CHANNEL terrain so water sits flat across the carved channel
+        const surfaceY = getTerrainHeightNoRiver(vx, vz);
+        const centerness = 1 - Math.abs(ct - 0.5) * 2;
+        const waterY = surfaceY - 0.25 + centerness * 0.05;
+        // Riverbed uses the carved terrain
+        const bedY = getTerrainHeight(vx, vz) - 0.15;
 
+        verts.push(vx, waterY, vz);
+        bedVerts.push(vx, bedY, vz);
+        uvs.push(ct, i / riverPath.length * 10);
+        bedUvs.push(ct, i / riverPath.length * 10);
+      }
+
+      // Quad indices
       if (i > 0) {
-        indices.push(vi - 2, vi - 1, vi);
-        indices.push(vi - 1, vi + 1, vi);
+        const base = i * row;
+        for (let c = 0; c < crossSegs; c++) {
+          const bl = base - row + c;
+          const br = base - row + c + 1;
+          const tl = base + c;
+          const tr = base + c + 1;
+          indices.push(bl, br, tl);
+          indices.push(br, tr, tl);
+        }
       }
+
+      // Bank positions
+      const bankOff = width * 0.55;
+      const blx = cx + nx * bankOff, blz = cz + nz * bankOff;
+      const brx = cx - nx * bankOff, brz = cz - nz * bankOff;
+      lBank.push(blx, getTerrainHeight(blx, blz) + 0.1, blz);
+      rBank.push(brx, getTerrainHeight(brx, brz) + 0.1, brz);
     }
 
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
-    geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-    geo.setIndex(indices);
-    geo.computeVertexNormals();
-    return { geometry: geo, leftBank: lBank, rightBank: rBank };
+    const makeGeo = (v: number[], u: number[]) => {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(v, 3));
+      geo.setAttribute("uv", new THREE.Float32BufferAttribute(u, 2));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      return geo;
+    };
+
+    return {
+      waterGeo: makeGeo(verts, uvs),
+      bedGeo: makeGeo(bedVerts, bedUvs),
+      bankGeoL: new Float32Array(lBank),
+      bankGeoR: new Float32Array(rBank),
+      basePositions: new Float32Array(verts),
+    };
   }, [riverPath]);
 
-  // Animate water shimmer
-  const matRef = useRef<THREE.MeshStandardMaterial>(null);
+  // Animate water — gentle flowing waves
+  const meshRef = useRef<THREE.Mesh>(null);
   useFrame(() => {
-    if (matRef.current) {
-      const t = Date.now() * 0.001;
-      matRef.current.emissiveIntensity = 0.08 + Math.sin(t * 2) * 0.04;
+    if (!meshRef.current) return;
+    const pos = meshRef.current.geometry.attributes.position;
+    const t = Date.now() * 0.001;
+    const row = crossSegs + 1;
+
+    for (let i = 0; i < pos.count; i++) {
+      const baseY = basePositions[i * 3 + 1];
+      const baseX = basePositions[i * 3];
+      const baseZ = basePositions[i * 3 + 2];
+      const col = i % row;
+      const centerDist = Math.abs(col / crossSegs - 0.5);
+      const waveStrength = Math.max(0, 1 - centerDist * 1.8);
+
+      const wave = Math.sin(baseX * 0.3 + t * 2.5) * 0.05
+                 + Math.sin(baseX * 0.7 + baseZ * 0.4 + t * 3.0) * 0.025
+                 + Math.cos(baseX * 0.12 + t * 1.6) * 0.03;
+
+      pos.setY(i, baseY + wave * waveStrength);
     }
+    pos.needsUpdate = true;
+    meshRef.current.geometry.computeVertexNormals();
   });
+
+  const bankCount = riverPath.length;
 
   return (
     <group>
-      <mesh geometry={geometry}>
+      {/* Riverbed — dark muddy bottom visible through water */}
+      <mesh geometry={bedGeo}>
+        <meshStandardMaterial color="#2a3025" roughness={1} flatShading side={THREE.DoubleSide} />
+      </mesh>
+      {/* Water surface */}
+      <mesh ref={meshRef} geometry={waterGeo}>
         <meshStandardMaterial
-          ref={matRef}
-          color="#1a3a5a"
-          emissive="#2a5a8a"
-          emissiveIntensity={0.08}
-          roughness={0.15}
-          metalness={0.6}
+          color="#2080a8"
+          emissive="#1a5a7a"
+          emissiveIntensity={0.18}
+          roughness={0.02}
+          metalness={0.85}
           transparent
-          opacity={0.8}
+          opacity={0.72}
+          side={THREE.DoubleSide}
         />
       </mesh>
-      {/* River banks - subtle sandy edges */}
-      {[leftBank, rightBank].map((bank, bi) => (
-        <line key={bi}>
-          <bufferGeometry>
-            <bufferAttribute
-              attach="attributes-position"
-              array={new Float32Array(bank.flat())}
-              count={bank.length}
-              itemSize={3}
-            />
-          </bufferGeometry>
-          <lineBasicMaterial color="#5a5040" linewidth={1} />
-        </line>
-      ))}
-      {/* A few river rocks */}
+      {/* River banks removed — terrain channel does the job */}
+      {/* River rocks */}
       {useMemo(() => {
         const rocks: JSX.Element[] = [];
         const rng = (seed: number) => {
           let s = seed;
-          return () => {
-            s = (s * 16807) % 2147483647;
-            return (s - 1) / 2147483646;
-          };
+          return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
         };
         const rand = rng(99);
-        for (let i = 0; i < 12; i++) {
+        for (let i = 0; i < 25; i++) {
           const idx = Math.floor(rand() * (riverPath.length - 2)) + 1;
-          const [rx, _, rz] = riverPath[idx];
-          const offset = (rand() - 0.5) * 1.2;
-          const sz = 0.06 + rand() * 0.12;
+          const [rx, ry, rz] = riverPath[idx];
+          const offset = (rand() - 0.5) * 1.8;
+          const sz = 0.1 + rand() * 0.18;
           rocks.push(
-            <mesh
-              key={i}
-              position={[rx + offset * 0.3, 0.02 + sz * 0.3, rz + offset]}
-            >
-              <sphereGeometry args={[sz, 5, 4]} />
+            <mesh key={i} position={[rx + offset * 0.3, ry + sz * 0.3, rz + offset * 0.3]}>
+              <dodecahedronGeometry args={[sz, 0]} />
               <meshStandardMaterial
-                color={`hsl(30, 5%, ${30 + rand() * 20}%)`}
-                roughness={0.9}
+                color={`hsl(25, 10%, ${30 + rand() * 20}%)`}
+                roughness={0.95}
                 flatShading
               />
             </mesh>,
           );
         }
         return rocks;
+      }, [riverPath])}
+      {/* Foam/splash circles on water surface */}
+      {useMemo(() => {
+        const foam: JSX.Element[] = [];
+        const rng = (seed: number) => {
+          let s = seed;
+          return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+        };
+        const rand = rng(777);
+        for (let i = 0; i < 20; i++) {
+          const idx = Math.floor(rand() * (riverPath.length - 2)) + 1;
+          const [fx, fy, fz] = riverPath[idx];
+          const ox = (rand() - 0.5) * 1.5;
+          const oz = (rand() - 0.5) * 1.5;
+          foam.push(
+            <mesh key={i} position={[fx + ox, fy + 0.05, fz + oz]} rotation={[-Math.PI / 2, 0, rand() * Math.PI]}>
+              <circleGeometry args={[0.08 + rand() * 0.12, 6]} />
+              <meshBasicMaterial color="#c8e0f0" transparent opacity={0.4} side={THREE.DoubleSide} />
+            </mesh>,
+          );
+        }
+        return foam;
       }, [riverPath])}
     </group>
   );
@@ -2996,22 +3079,45 @@ function Deer({
   startX,
   startZ,
   scale: s,
+  deerIndex,
+  isExploring,
 }: {
   startX: number;
   startZ: number;
   scale: number;
+  deerIndex: number;
+  isExploring?: boolean;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const legRefs = useRef<(THREE.Mesh | null)[]>([]);
   const headRef = useRef<THREE.Group>(null);
   const tailRef = useRef<THREE.Mesh>(null);
+  const sparkleRef = useRef<THREE.InstancedMesh>(null);
+  const sparkleInited = useRef(false);
+  const posRef = useRef({ x: startX, z: startZ });
+  const facingRef = useRef(0);
+  const sparkleData = useRef<{ x: number; y: number; z: number; life: number; vy: number; vx: number; vz: number }[]>([]);
 
-  // Each deer has its own random walk/graze cycle
+  // Hide all sparkle instances on first render
+  useEffect(() => {
+    if (sparkleRef.current && !sparkleInited.current) {
+      sparkleInited.current = true;
+      const dummy = new THREE.Object3D();
+      dummy.position.set(0, -200, 0);
+      dummy.scale.setScalar(0);
+      dummy.updateMatrix();
+      for (let i = 0; i < 20; i++) {
+        sparkleRef.current.setMatrixAt(i, dummy.matrix);
+      }
+      sparkleRef.current.instanceMatrix.needsUpdate = true;
+    }
+  }, []);
+
   const behavior = useMemo(
     () => ({
       walkSpeed: 0.04 + Math.random() * 0.03,
       walkRadius: 1.5 + Math.random() * 2,
-      grazeInterval: 3 + Math.random() * 4, // seconds between grazing
+      grazeInterval: 3 + Math.random() * 4,
       grazeDuration: 5 + Math.random() * 8,
       phaseOffset: Math.random() * Math.PI * 2,
       dirOffset: Math.random() * Math.PI * 2,
@@ -3019,55 +3125,167 @@ function Deer({
     [],
   );
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     if (!groupRef.current) return;
     const t = Date.now() * 0.001;
+
+    const isRidden = deerRiding.active && deerRiding.deerIndex === deerIndex;
+
+    if (isRidden) {
+      // Player controls the deer — faster than walking
+      const turnSpeed = 3.0;
+      const rideSpeed = 12.0;
+      const keys = explorerKeys;
+
+      if (keys.has("a") || keys.has("arrowleft")) facingRef.current += turnSpeed * delta;
+      if (keys.has("d") || keys.has("arrowright")) facingRef.current -= turnSpeed * delta;
+
+      let forward = 0;
+      if (keys.has("w") || keys.has("arrowup")) forward = 1;
+      if (keys.has("s") || keys.has("arrowdown")) forward = -0.5;
+
+      if (forward !== 0) {
+        const dx = Math.sin(facingRef.current) * forward;
+        const dz = Math.cos(facingRef.current) * forward;
+        posRef.current.x += dx * rideSpeed * delta;
+        posRef.current.z += dz * rideSpeed * delta;
+      }
+
+      // Dismount with R
+      if (keys.has("r") && !deerRiding.justMounted) {
+        deerRiding.active = false;
+        deerRiding.deerIndex = -1;
+        // Place player next to deer
+        explorerPos.x = posRef.current.x + Math.cos(facingRef.current) * 1.5;
+        explorerPos.z = posRef.current.z - Math.sin(facingRef.current) * 1.5;
+        explorerPos.facing = facingRef.current;
+      }
+      if (!keys.has("r")) deerRiding.justMounted = false;
+
+      // Update shared position so camera follows
+      explorerPos.x = posRef.current.x;
+      explorerPos.z = posRef.current.z;
+      explorerPos.facing = facingRef.current;
+
+      const y = getTerrainHeight(posRef.current.x, posRef.current.z);
+      groupRef.current.position.set(posRef.current.x, y, posRef.current.z);
+      groupRef.current.rotation.y = facingRef.current;
+
+      // Gallop animation
+      const gallop = forward !== 0 ? Math.sin(t * 12) * 0.6 : 0;
+      for (let i = 0; i < 4; i++) {
+        const leg = legRefs.current[i];
+        if (leg) {
+          const sign = i % 2 === 0 ? 1 : -1;
+          const fb = i < 2 ? 1 : -1;
+          leg.rotation.x = gallop * sign * fb;
+        }
+      }
+      if (headRef.current) headRef.current.rotation.x = forward !== 0 ? -0.1 : 0.05;
+
+      // Sparkle trail — only spawn when moving, always update/decay
+      if (sparkleRef.current) {
+        // Spawn only when galloping
+        if (forward !== 0) {
+          for (let sp = 0; sp < 2; sp++) {
+            sparkleData.current.push({
+              x: posRef.current.x + (Math.random() - 0.5) * 0.4 - Math.sin(facingRef.current) * 0.3 * s,
+              y: y + 0.1 + Math.random() * 0.3,
+              z: posRef.current.z - Math.cos(facingRef.current) * 0.3 * s + (Math.random() - 0.5) * 0.4,
+              life: 1.0,
+              vy: 1.0 + Math.random() * 1.5,
+              vx: (Math.random() - 0.5) * 0.8,
+              vz: (Math.random() - 0.5) * 0.8,
+            });
+          }
+          if (sparkleData.current.length > 20) sparkleData.current.splice(0, sparkleData.current.length - 20);
+        }
+
+        // Always update all sparkles (animate + fade even when stopped)
+        const dummy = new THREE.Object3D();
+        const sd = sparkleData.current;
+        const colors = sparkleRef.current.instanceColor
+          || new THREE.InstancedBufferAttribute(new Float32Array(20 * 3), 3);
+        const sparkleColors = ["#ffdd44","#44ddff","#ff88ff","#88ff88","#ff8844"];
+        for (let si = 0; si < 20; si++) {
+          if (si < sd.length) {
+            const sp = sd[si];
+            sp.life -= delta * 1.5;
+            sp.x += sp.vx * delta;
+            sp.y += sp.vy * delta;
+            sp.z += sp.vz * delta;
+            sp.vy -= delta * 0.5;
+            const scale = Math.max(0, sp.life) * 0.08;
+            dummy.position.set(sp.x, sp.y, sp.z);
+            dummy.scale.setScalar(scale);
+            const c = new THREE.Color(sparkleColors[si % sparkleColors.length]);
+            colors.setXYZ(si, c.r, c.g, c.b);
+          } else {
+            dummy.position.set(0, -200, 0);
+            dummy.scale.setScalar(0);
+          }
+          dummy.updateMatrix();
+          sparkleRef.current.setMatrixAt(si, dummy.matrix);
+        }
+        if (!sparkleRef.current.instanceColor) {
+          sparkleRef.current.instanceColor = colors as THREE.InstancedBufferAttribute;
+        }
+        (sparkleRef.current.instanceColor as THREE.InstancedBufferAttribute).needsUpdate = true;
+        sparkleRef.current.instanceMatrix.needsUpdate = true;
+        sparkleData.current = sd.filter(p => p.life > 0);
+      }
+
+      return;
+    }
+
+    // Not ridden — check for mount on contact
+    if (isExploring && !deerRiding.active) {
+      const dx = explorerPos.x - posRef.current.x;
+      const dz = explorerPos.z - posRef.current.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < 1.8) {
+        deerRiding.active = true;
+        deerRiding.deerIndex = deerIndex;
+        deerRiding.justMounted = true;
+        deerRiding.mountTime = Date.now();
+        facingRef.current = explorerPos.facing;
+        return;
+      }
+    }
+
+    // Gentle wandering
     const phase = t * 0.08 + behavior.phaseOffset;
+    const x = startX + Math.sin(phase + behavior.dirOffset) * behavior.walkRadius;
+    const z = startZ + Math.cos(phase * 0.7 + behavior.dirOffset) * behavior.walkRadius * 0.6;
+    posRef.current.x = x;
+    posRef.current.z = z;
+    groupRef.current.position.set(x, getTerrainHeight(x, z), z);
 
-    // Walk in a gentle loop
-    const x =
-      startX + Math.sin(phase + behavior.dirOffset) * behavior.walkRadius;
-    const z =
-      startZ +
-      Math.cos(phase * 0.7 + behavior.dirOffset) * behavior.walkRadius * 0.6;
-    groupRef.current.position.set(x, 0, z);
+    const mdx = Math.cos(phase + behavior.dirOffset) * behavior.walkRadius * 0.3;
+    const mdz = -Math.sin(phase * 0.7 + behavior.dirOffset) * behavior.walkRadius * 0.6 * 0.7;
+    facingRef.current = Math.atan2(mdx, mdz);
+    groupRef.current.rotation.y = facingRef.current;
 
-    // Face movement direction
-    const dx = Math.cos(phase + behavior.dirOffset) * behavior.walkRadius * 0.3;
-    const dz =
-      -Math.sin(phase * 0.7 + behavior.dirOffset) *
-      behavior.walkRadius *
-      0.6 *
-      0.7;
-    groupRef.current.rotation.y = Math.atan2(dx, dz);
-
-    // Grazing: head dips down periodically
-    const grazeCycle =
-      (t + behavior.phaseOffset) %
-      (behavior.grazeInterval + behavior.grazeDuration);
+    const grazeCycle = (t + behavior.phaseOffset) % (behavior.grazeInterval + behavior.grazeDuration);
     const isGrazing = grazeCycle > behavior.grazeInterval;
     if (headRef.current) {
       const targetRot = isGrazing ? 1.2 : 0.05;
-      headRef.current.rotation.x +=
-        (targetRot - headRef.current.rotation.x) * 0.05;
+      headRef.current.rotation.x += (targetRot - headRef.current.rotation.x) * 0.05;
     }
 
-    // Leg animation (walk cycle)
     const legSwing = isGrazing ? 0 : Math.sin(t * 1.5 + behavior.phaseOffset);
     for (let i = 0; i < 4; i++) {
       const leg = legRefs.current[i];
       if (leg) {
         const sign = i % 2 === 0 ? 1 : -1;
         const frontBack = i < 2 ? 1 : -1;
-        leg.rotation.x =
-          legSwing * 0.25 * sign * frontBack * (isGrazing ? 0.1 : 1);
+        leg.rotation.x = legSwing * 0.25 * sign * frontBack * (isGrazing ? 0.1 : 1);
       }
     }
 
-    // Tail flick
     if (tailRef.current) {
-      tailRef.current.rotation.x =
-        -0.5 + Math.sin(t * 2 + behavior.phaseOffset * 3) * 0.3;
+      tailRef.current.rotation.x = -0.5 + Math.sin(t * 2 + behavior.phaseOffset * 3) * 0.3;
     }
   });
 
@@ -3076,6 +3294,7 @@ function Deer({
   const legColor = "#8a6830";
 
   return (
+    <>
     <group ref={groupRef} scale={[s, s, s]}>
       {/* Body - elongated box */}
       <mesh position={[0, 0.55, 0]} scale={[0.18, 0.16, 0.45]}>
@@ -3172,6 +3391,12 @@ function Deer({
         <meshStandardMaterial color="#e8d8b8" roughness={0.9} flatShading />
       </mesh>
     </group>
+    {/* Running sparkles — world-space instanced mesh */}
+    <instancedMesh ref={sparkleRef} args={[undefined, undefined, 20]} frustumCulled={false}>
+      <sphereGeometry args={[1, 6, 6]} />
+      <meshBasicMaterial color="#ffffff" transparent opacity={0.9} />
+    </instancedMesh>
+    </>
   );
 }
 
@@ -3584,13 +3809,16 @@ function Campfire() {
   );
 }
 
-function DeerHerd() {
+function DeerHerd({ isExploring }: { isExploring?: boolean }) {
   const deerPositions = useMemo(
     () => [
-      { x: -12, z: -14, scale: 1.1 },
-      { x: -9, z: -16, scale: 1.2 },
-      { x: -14, z: -15, scale: 1.0 },
-      { x: 10, z: -13, scale: 1.15 },
+      { x: -25, z: -25, scale: 1.1 },
+      { x: -22, z: -28, scale: 1.2 },
+      { x: -28, z: -26, scale: 1.0 },
+      { x: 30, z: 22, scale: 1.15 },
+      { x: 40, z: 25, scale: 1.0 },
+      { x: -35, z: 28, scale: 1.25 },
+      { x: 55, z: 15, scale: 1.1 },
     ],
     [],
   );
@@ -3598,7 +3826,7 @@ function DeerHerd() {
   return (
     <group>
       {deerPositions.map((d, i) => (
-        <Deer key={i} startX={d.x} startZ={d.z} scale={d.scale} />
+        <Deer key={i} startX={d.x} startZ={d.z} scale={d.scale} deerIndex={i} isExploring={isExploring} />
       ))}
     </group>
   );
@@ -4069,6 +4297,501 @@ export const explorerPos = { x: 0, z: 3, facing: 0 };
 // Shared key set — both keyboard and mobile touch controls write here
 export const explorerKeys = new Set<string>();
 
+// Deer riding state
+export const deerRiding = {
+  active: false,
+  deerIndex: -1,
+  justMounted: false,
+  mountTime: 0, // timestamp for magic effect
+};
+
+// Tracks deer mount/dismount and spawns magic sparkle bursts
+function MagicSparkleTracker() {
+  const [effects, setEffects] = useState<{ id: number; pos: [number, number, number] }[]>([]);
+  const lastMountTime = useRef(0);
+  const wasRiding = useRef(false);
+
+  useFrame(() => {
+    // Detect mount
+    if (deerRiding.active && !wasRiding.current) {
+      wasRiding.current = true;
+      if (deerRiding.mountTime !== lastMountTime.current) {
+        lastMountTime.current = deerRiding.mountTime;
+        const y = getTerrainHeight(explorerPos.x, explorerPos.z);
+        setEffects(prev => [...prev.slice(-3), { id: Date.now(), pos: [explorerPos.x, y + 0.5, explorerPos.z] }]);
+      }
+    }
+    // Detect dismount
+    if (!deerRiding.active && wasRiding.current) {
+      wasRiding.current = false;
+      const y = getTerrainHeight(explorerPos.x, explorerPos.z);
+      setEffects(prev => [...prev.slice(-3), { id: Date.now(), pos: [explorerPos.x, y + 0.5, explorerPos.z] }]);
+    }
+  });
+
+  // Clean up old effects
+  useEffect(() => {
+    if (effects.length === 0) return;
+    const timer = setTimeout(() => {
+      setEffects(prev => prev.filter(e => Date.now() - e.id < 3000));
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [effects]);
+
+  return (
+    <>
+      {effects.map(e => (
+        <DeerMagicEffect key={e.id} position={e.pos} />
+      ))}
+    </>
+  );
+}
+
+// Magic transformation sparkles when mounting/dismounting deer
+function DeerMagicEffect({ position }: { position: [number, number, number] }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const startTime = useRef(Date.now());
+  const particles = useMemo(() => {
+    const pts: { ox: number; oy: number; oz: number; speed: number; phase: number; color: string }[] = [];
+    for (let i = 0; i < 30; i++) {
+      const angle = (i / 30) * Math.PI * 2;
+      const r = 0.3 + Math.random() * 0.8;
+      pts.push({
+        ox: Math.cos(angle) * r,
+        oy: Math.random() * 1.5,
+        oz: Math.sin(angle) * r,
+        speed: 1.5 + Math.random() * 2,
+        phase: Math.random() * Math.PI * 2,
+        color: ["#ffdd44", "#44ddff", "#ff88ff", "#88ff88", "#ffffff"][Math.floor(Math.random() * 5)],
+      });
+    }
+    return pts;
+  }, []);
+
+  useFrame(() => {
+    if (!groupRef.current) return;
+    const elapsed = (Date.now() - startTime.current) / 1000;
+    // Fade out after 2 seconds
+    if (elapsed > 2.5) {
+      groupRef.current.visible = false;
+      return;
+    }
+    const fade = Math.max(0, 1 - elapsed / 2.5);
+    groupRef.current.children.forEach((child, i) => {
+      const p = particles[i];
+      if (!p) return;
+      const t = elapsed * p.speed + p.phase;
+      child.position.set(
+        p.ox * (1 + elapsed * 0.5),
+        p.oy + Math.sin(t * 3) * 0.3 + elapsed * 1.2,
+        p.oz * (1 + elapsed * 0.5),
+      );
+      child.scale.setScalar(fade * (0.5 + Math.sin(t * 5) * 0.3));
+      ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = fade * 0.8;
+    });
+  });
+
+  return (
+    <group ref={groupRef} position={position}>
+      {particles.map((p, i) => (
+        <mesh key={i}>
+          <sphereGeometry args={[0.06, 6, 6]} />
+          <meshBasicMaterial color={p.color} transparent opacity={0.8} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// === TERRAIN HEIGHT ===
+// Smooth rolling hills used by terrain mesh, player, hikers, deer, dog, etc.
+// River path is carved out as a depression.
+// Mountains at z: -18, -32, -48. River at z ≈ -12. Front valley wall at z: 35.
+// Shop at (-45, 8). All trails stay in the open valley (z: -5 to 30).
+const TRAIL_PATHS: [number, number][][] = [
+  // Shop trail — from climbing wall area to the shop and back (south side of valley)
+  [[0,8],[-8,10],[-18,10],[-28,10],[-38,10],[-45,12],[-38,10],[-28,10],[-18,10],[-8,10],[0,8]],
+  // North meadow loop — scenic loop through the northern hills, doesn't cross shop trail
+  [[5,18],[15,22],[28,26],[42,28],[55,25],[62,20],[55,18],[42,20],[28,22],[15,20],[5,18]],
+];
+
+// Check if a point is near any trail segment
+function isNearTrail(px: number, pz: number, clearance: number): boolean {
+  for (const trail of TRAIL_PATHS) {
+    for (let i = 0; i < trail.length - 1; i++) {
+      const [ax, az] = trail[i];
+      const [bx, bz] = trail[i + 1];
+      // Point-to-segment distance
+      const dx = bx - ax, dz = bz - az;
+      const lenSq = dx * dx + dz * dz;
+      const t = lenSq === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / lenSq));
+      const cx = ax + t * dx, cz = az + t * dz;
+      const dist = Math.sqrt((px - cx) * (px - cx) + (pz - cz) * (pz - cz));
+      if (dist < clearance) return true;
+    }
+  }
+  return false;
+}
+
+// Pre-compute tree positions for collision + rendering (same RNG as tree rendering)
+type TreePos = { x: number; z: number; h: number; r: number; hue: number; sat: number; lit: number };
+const TREE_POSITIONS: TreePos[] = (() => {
+  const trees: TreePos[] = [];
+  const rng = (seed: number) => {
+    let s = seed;
+    return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+  };
+  const rand = rng(42);
+  for (let i = 0; i < 600; i++) {
+    const x = (rand() - 0.5) * 220;
+    const z = (rand() - 0.5) * 180;
+    if (Math.abs(x) < 6 && Math.abs(z) < 6) continue;
+    const rz = getRiverZ(x);
+    if (Math.abs(z - rz) < 4) continue;
+    if (isNearTrail(x, z, 2.0)) continue;
+    const h = 1.5 + rand() * 3;
+    const r = 0.4 + rand() * 0.6;
+    trees.push({ x, z, h, r, hue: 140 + rand() * 30, sat: 25 + rand() * 15, lit: 18 + rand() * 10 });
+  }
+  return trees;
+})();
+
+// Collision obstacles — trees + large rocks
+const COLLISION_OBSTACLES: [number, number, number][] = TREE_POSITIONS.map(t => [t.x, t.z, t.r * 0.4]);
+
+// Terrain height WITHOUT river channel — used by water surface to sit flat above the channel
+function getTerrainHeightNoRiver(x: number, z: number): number {
+  const inCampX = (x > -58 && x < 13);
+  const inCampZ = (z > -14 && z < 18);
+  let flatZone = 0;
+  if (inCampX && inCampZ) {
+    flatZone = 1;
+  } else {
+    const edgeX = inCampX ? 0 : Math.min(Math.abs(x - (-58)), Math.abs(x - 13));
+    const edgeZ = inCampZ ? 0 : Math.min(Math.abs(z - (-14)), Math.abs(z - 18));
+    const edgeDist = Math.sqrt(edgeX * edgeX + edgeZ * edgeZ);
+    flatZone = Math.max(0, 1 - edgeDist / 15);
+  }
+
+  let h = 0;
+  h += Math.sin(x * 0.04) * Math.cos(z * 0.05) * 3.0;
+  h += Math.sin(x * 0.08 + 1.3) * Math.cos(z * 0.07 + 0.7) * 1.5;
+  h += Math.sin(x * 0.15 + 2.1) * Math.cos(z * 0.12 + 1.1) * 0.6;
+  h += Math.cos(x * 0.03 + z * 0.04) * 2.0;
+
+  const distFromOrigin = Math.sqrt(x * x + z * z);
+  const distScale = Math.min(1, Math.max(0, (distFromOrigin - 30) / 40));
+  h += Math.sin(x * 0.025 + 0.5) * Math.sin(z * 0.03 + 0.8) * 5.0 * distScale;
+
+  h *= (1 - flatZone);
+  return h;
+}
+
+function getTerrainHeight(x: number, z: number): number {
+  let h = getTerrainHeightNoRiver(x, z);
+
+  // River channel depression
+  const riverZ = getRiverZ(x);
+  const riverDist = Math.abs(z - riverZ);
+  const channelT = Math.max(0, 1 - riverDist / 3.5);
+  const riverDepth = channelT * channelT * 3.5;
+  h -= riverDepth;
+
+  return h;
+}
+
+// River center z for a given x — used for collision
+function getRiverZ(x: number): number {
+  return -12 + Math.sin((x + 80) / 160 * Math.PI * 2.5) * 3 + Math.cos((x + 80) / 160 * Math.PI * 1.2) * 2;
+}
+
+// === TRAIL HIKERS (NPCs) ===
+// Built like ExploringClimber — groups at pivot points so limbs swing naturally
+function Hiker({ trailIndex, startOffset, speed, shirtColor, pantColor, hikerScale }: {
+  trailIndex: number; startOffset: number; speed: number;
+  shirtColor: string; pantColor: string; hikerScale: number;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const progressRef = useRef(startOffset);
+  const walkPhaseRef = useRef(0);
+  const leftLegRef = useRef<THREE.Group>(null);
+  const rightLegRef = useRef<THREE.Group>(null);
+  const leftArmRef = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Group>(null);
+  const trail = TRAIL_PATHS[trailIndex % TRAIL_PATHS.length];
+
+  const getTrailPoint = (progress: number): [number, number, number, number] => {
+    const totalSegs = trail.length - 1;
+    const p = ((progress % 1) + 1) % 1;
+    const segF = p * totalSegs;
+    const seg = Math.floor(segF);
+    const t = segF - seg;
+    const i0 = Math.min(seg, totalSegs - 1);
+    const i1 = Math.min(i0 + 1, trail.length - 1);
+    const x = trail[i0][0] + (trail[i1][0] - trail[i0][0]) * t;
+    const z = trail[i0][1] + (trail[i1][1] - trail[i0][1]) * t;
+    const y = getTerrainHeight(x, z);
+    const dx = trail[i1][0] - trail[i0][0];
+    const dz = trail[i1][1] - trail[i0][1];
+    const facing = Math.atan2(dx, dz);
+    return [x, y, z, facing];
+  };
+
+  useFrame((_, delta) => {
+    progressRef.current += speed * delta;
+    if (progressRef.current > 1) progressRef.current -= 1;
+    if (progressRef.current < 0) progressRef.current += 1;
+
+    const [x, y, z, facing] = getTrailPoint(progressRef.current);
+
+    const dx = x - explorerPos.x;
+    const dz = z - explorerPos.z;
+    if (dx * dx + dz * dz > 80 * 80) {
+      if (groupRef.current) groupRef.current.visible = false;
+      return;
+    }
+
+    if (groupRef.current) {
+      groupRef.current.position.set(x, y, z);
+      groupRef.current.rotation.y = facing;
+      groupRef.current.visible = true;
+    }
+
+    walkPhaseRef.current += delta * 7;
+    const swing = Math.sin(walkPhaseRef.current) * 0.45;
+    if (leftLegRef.current) leftLegRef.current.rotation.x = -swing;
+    if (rightLegRef.current) rightLegRef.current.rotation.x = swing;
+    if (leftArmRef.current) leftArmRef.current.rotation.x = swing * 0.5;
+    if (rightArmRef.current) rightArmRef.current.rotation.x = -swing * 0.5;
+  });
+
+  // Stable scale per hiker instance (passed as prop, not random per render)
+  const s = hikerScale;
+  const headR = 0.065 * s;
+  const torsoH = 0.24 * s;
+  const torsoW = 0.085 * s;
+  const upperLegL = 0.2 * s;
+  const lowerLegL = 0.18 * s;
+  const armL = 0.22 * s;
+  const pelvisY = upperLegL + lowerLegL + 0.02 * s;
+  const chestY = pelvisY + torsoH;
+  const headY = chestY + 0.06 * s + headR;
+  const shoulderW = torsoW * 1.15;
+
+  return (
+    <group ref={groupRef} visible={false}>
+      {/* Head */}
+      <mesh position={[0, headY, 0]}>
+        <sphereGeometry args={[headR, 10, 10]} />
+        <meshStandardMaterial color="#ddbbaa" roughness={0.7} />
+      </mesh>
+      {/* Hat */}
+      <group position={[0, headY + headR * 0.3, 0]}>
+        <mesh>
+          <cylinderGeometry args={[headR * 0.6, headR * 1.15, headR * 0.5, 10]} />
+          <meshStandardMaterial color="#665544" roughness={0.9} />
+        </mesh>
+        {/* Brim */}
+        <mesh position={[0, -headR * 0.2, 0]}>
+          <cylinderGeometry args={[headR * 1.4, headR * 1.4, headR * 0.06, 12]} />
+          <meshStandardMaterial color="#665544" roughness={0.9} />
+        </mesh>
+      </group>
+      {/* Torso */}
+      <mesh position={[0, pelvisY + torsoH * 0.5, 0]}>
+        <cylinderGeometry args={[torsoW * 0.85, torsoW, torsoH, 8]} />
+        <meshStandardMaterial color={shirtColor} roughness={0.7} />
+      </mesh>
+      {/* Backpack */}
+      <mesh position={[0, pelvisY + torsoH * 0.55, -torsoW * 1.3]}>
+        <boxGeometry args={[torsoW * 1.8, torsoH * 0.8, torsoW * 1.0]} />
+        <meshStandardMaterial color="#5a4a3a" roughness={0.85} />
+      </mesh>
+      {/* Left arm — pivot at shoulder */}
+      <group ref={leftArmRef} position={[-shoulderW, chestY - 0.02 * s, 0]}>
+        <mesh position={[0, -armL * 0.5, 0]}>
+          <cylinderGeometry args={[0.02 * s, 0.016 * s, armL, 6]} />
+          <meshStandardMaterial color={shirtColor} roughness={0.7} />
+        </mesh>
+      </group>
+      {/* Right arm — pivot at shoulder */}
+      <group ref={rightArmRef} position={[shoulderW, chestY - 0.02 * s, 0]}>
+        <mesh position={[0, -armL * 0.5, 0]}>
+          <cylinderGeometry args={[0.02 * s, 0.016 * s, armL, 6]} />
+          <meshStandardMaterial color={shirtColor} roughness={0.7} />
+        </mesh>
+      </group>
+      {/* Left leg — pivot at hip */}
+      <group ref={leftLegRef} position={[-0.035 * s, pelvisY, 0]}>
+        <mesh position={[0, -upperLegL * 0.5, 0]}>
+          <cylinderGeometry args={[0.025 * s, 0.02 * s, upperLegL, 6]} />
+          <meshStandardMaterial color={pantColor} roughness={0.7} />
+        </mesh>
+        <mesh position={[0, -upperLegL - lowerLegL * 0.5, 0]}>
+          <cylinderGeometry args={[0.02 * s, 0.018 * s, lowerLegL, 6]} />
+          <meshStandardMaterial color={pantColor} roughness={0.7} />
+        </mesh>
+        {/* Boot */}
+        <mesh position={[0, -upperLegL - lowerLegL, 0.015 * s]}>
+          <boxGeometry args={[0.03 * s, 0.02 * s, 0.06 * s]} />
+          <meshStandardMaterial color="#3a2a1a" roughness={0.9} />
+        </mesh>
+      </group>
+      {/* Right leg — pivot at hip */}
+      <group ref={rightLegRef} position={[0.035 * s, pelvisY, 0]}>
+        <mesh position={[0, -upperLegL * 0.5, 0]}>
+          <cylinderGeometry args={[0.025 * s, 0.02 * s, upperLegL, 6]} />
+          <meshStandardMaterial color={pantColor} roughness={0.7} />
+        </mesh>
+        <mesh position={[0, -upperLegL - lowerLegL * 0.5, 0]}>
+          <cylinderGeometry args={[0.02 * s, 0.018 * s, lowerLegL, 6]} />
+          <meshStandardMaterial color={pantColor} roughness={0.7} />
+        </mesh>
+        {/* Boot */}
+        <mesh position={[0, -upperLegL - lowerLegL, 0.015 * s]}>
+          <boxGeometry args={[0.03 * s, 0.02 * s, 0.06 * s]} />
+          <meshStandardMaterial color="#3a2a1a" roughness={0.9} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+const HIKER_CONFIGS = [
+  { trailIndex: 0, startOffset: 0.2, speed: 0.012, shirtColor: "#cc4444", pantColor: "#445566", hikerScale: 1.0 },
+  { trailIndex: 1, startOffset: 0.4, speed: 0.01, shirtColor: "#44aa44", pantColor: "#554433", hikerScale: 1.05 },
+];
+
+function TrailHikers() {
+  return (
+    <group>
+      {HIKER_CONFIGS.map((cfg, i) => (
+        <Hiker key={i} {...cfg} />
+      ))}
+    </group>
+  );
+}
+
+// === TRAIL MARKERS ===
+function Trails() {
+  // Build dirt-path mesh strips that follow terrain
+  const trailMeshes = useMemo(() => {
+    return TRAIL_PATHS.map((trail, ti) => {
+      const verts: number[] = [];
+      const indices: number[] = [];
+      const colors: number[] = [];
+      const trailWidth = 0.7;
+      const stepsPerSeg = 12;
+
+      // Subdivide trail into fine steps
+      const subPoints: [number, number][] = [];
+      for (let i = 0; i < trail.length - 1; i++) {
+        for (let s = 0; s < stepsPerSeg; s++) {
+          const t = s / stepsPerSeg;
+          subPoints.push([
+            trail[i][0] + (trail[i + 1][0] - trail[i][0]) * t,
+            trail[i][1] + (trail[i + 1][1] - trail[i][1]) * t,
+          ]);
+        }
+      }
+      subPoints.push(trail[trail.length - 1]);
+
+      // Seeded RNG for color variation
+      const rng = (seed: number) => {
+        let ss = seed + ti * 1000;
+        return () => { ss = (ss * 16807) % 2147483647; return (ss - 1) / 2147483646; };
+      };
+      const rand = rng(314);
+
+      const dirtBase = new THREE.Color("#6b5a3a");
+      const dirtDark = new THREE.Color("#4a3a22");
+      const dirtLight = new THREE.Color("#8a7a55");
+
+      for (let i = 0; i < subPoints.length; i++) {
+        const [px, pz] = subPoints[i];
+        // Direction for perpendicular
+        let dx = 0, dz = 0;
+        if (i < subPoints.length - 1) {
+          dx = subPoints[i + 1][0] - px;
+          dz = subPoints[i + 1][1] - pz;
+        } else {
+          dx = px - subPoints[i - 1][0];
+          dz = pz - subPoints[i - 1][1];
+        }
+        const len = Math.sqrt(dx * dx + dz * dz) || 1;
+        const nx = -dz / len;
+        const nz = dx / len;
+
+        const lx = px + nx * trailWidth * 0.5;
+        const lz = pz + nz * trailWidth * 0.5;
+        const rx = px - nx * trailWidth * 0.5;
+        const rz = pz - nz * trailWidth * 0.5;
+
+        const ly = getTerrainHeight(lx, lz) + 0.06;
+        const ry = getTerrainHeight(rx, rz) + 0.06;
+
+        verts.push(lx, ly, lz);
+        verts.push(rx, ry, rz);
+
+        // Varied dirt color per vertex
+        const v1 = rand();
+        const c1 = dirtBase.clone().lerp(v1 > 0.6 ? dirtDark : dirtLight, (v1 - 0.3) * 0.8);
+        const v2 = rand();
+        const c2 = dirtBase.clone().lerp(v2 > 0.6 ? dirtDark : dirtLight, (v2 - 0.3) * 0.8);
+        colors.push(c1.r, c1.g, c1.b);
+        colors.push(c2.r, c2.g, c2.b);
+
+        if (i > 0) {
+          const vi = i * 2;
+          indices.push(vi - 2, vi - 1, vi);
+          indices.push(vi - 1, vi + 1, vi);
+        }
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+      geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+
+      return geo;
+    });
+  }, []);
+
+  return (
+    <group>
+      {trailMeshes.map((geo, i) => (
+        <mesh key={i} geometry={geo}>
+          <meshStandardMaterial
+            vertexColors
+            roughness={0.95}
+            flatShading
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+      {/* Trail post markers at key waypoints */}
+      {TRAIL_PATHS.flatMap((trail, ti) =>
+        trail.filter((_, i) => i % 3 === 0).map(([x, z], pi) => {
+          const y = getTerrainHeight(x, z);
+          return (
+            <group key={`${ti}-${pi}`} position={[x, y, z]}>
+              <mesh position={[0, 0.3, 0]}>
+                <cylinderGeometry args={[0.04, 0.05, 0.6, 6]} />
+                <meshStandardMaterial color="#6b4226" roughness={0.9} />
+              </mesh>
+              <mesh position={[0, 0.62, 0]}>
+                <boxGeometry args={[0.15, 0.08, 0.03]} />
+                <meshStandardMaterial color="#8b6914" roughness={0.8} />
+              </mesh>
+            </group>
+          );
+        })
+      )}
+    </group>
+  );
+}
+
 // === EXPLORING CLIMBER ===
 // Walking climber with backpack, controlled by arrow keys / WASD
 function ExploringClimber({ scale, onOutOfBounds }: { scale: number; onOutOfBounds?: () => void }) {
@@ -4101,7 +4824,24 @@ function ExploringClimber({ scale, onOutOfBounds }: { scale: number; onOutOfBoun
   }, []);
 
   useFrame((_, delta) => {
-    const moveSpeed = 4.5;
+    // When riding a deer, hide climber and sync position from deer
+    if (deerRiding.active) {
+      posRef.current.x = explorerPos.x;
+      posRef.current.z = explorerPos.z;
+      facingRef.current = explorerPos.facing;
+      if (groupRef.current) groupRef.current.visible = false;
+      return;
+    }
+    if (groupRef.current && !groupRef.current.visible) {
+      groupRef.current.visible = true;
+      // Sync position after dismount
+      posRef.current.x = explorerPos.x;
+      posRef.current.z = explorerPos.z;
+      facingRef.current = explorerPos.facing;
+    }
+
+    const onTrail = isNearTrail(posRef.current.x, posRef.current.z, 1.0);
+    const moveSpeed = onTrail ? 7.0 : 4.5;
     const turnSpeed = 3.5;
     const keys = explorerKeys;
 
@@ -4122,15 +4862,41 @@ function ExploringClimber({ scale, onOutOfBounds }: { scale: number; onOutOfBoun
     if (moving) {
       const dx = Math.sin(facingRef.current) * forward;
       const dz = Math.cos(facingRef.current) * forward;
-      posRef.current.x += dx * moveSpeed * delta;
-      posRef.current.z += dz * moveSpeed * delta;
+      const newX = posRef.current.x + dx * moveSpeed * delta;
+      const newZ = posRef.current.z + dz * moveSpeed * delta;
 
-      // Out of bounds detection — mountains (z<-16), past shop (x<-55), edges
+      // Collision detection
+      let blocked = false;
+
+      // Shop building collision (box at -45, 8, roughly 4x3.5)
+      if (newX > -47.5 && newX < -42.5 && newZ > 6 && newZ < 10) blocked = true;
+
+      // Tree collisions
+      for (const [tx, tz, tr] of COLLISION_OBSTACLES) {
+        const ddx = newX - tx;
+        const ddz = newZ - tz;
+        if (ddx * ddx + ddz * ddz < tr * tr) { blocked = true; break; }
+      }
+
+      // River collision — can't walk through the river
+      const rz = getRiverZ(newX);
+      if (Math.abs(newZ - rz) < 1.4) blocked = true;
+
+      // Steep slope check — can't climb too-steep terrain
+      const currentY = getTerrainHeight(posRef.current.x, posRef.current.z);
+      const nextY = getTerrainHeight(newX, newZ);
+      if (nextY - currentY > 0.8 * moveSpeed * delta) blocked = true;
+
+      if (!blocked) {
+        posRef.current.x = newX;
+        posRef.current.z = newZ;
+      }
+
+      // Out of bounds detection — expanded world
       const oob =
-        posRef.current.x < -55 || posRef.current.x > 35 ||
-        posRef.current.z > 25 || posRef.current.z < -16;
+        posRef.current.x < -120 || posRef.current.x > 120 ||
+        posRef.current.z > 80 || posRef.current.z < -70;
       if (oob && onOutOfBounds) {
-        // Reset position to safe spot
         posRef.current.x = 0;
         posRef.current.z = 3;
         onOutOfBounds();
@@ -4147,6 +4913,7 @@ function ExploringClimber({ scale, onOutOfBounds }: { scale: number; onOutOfBoun
 
     if (groupRef.current) {
       groupRef.current.position.x = posRef.current.x;
+      groupRef.current.position.y = getTerrainHeight(posRef.current.x, posRef.current.z);
       groupRef.current.position.z = posRef.current.z;
       groupRef.current.rotation.y = facingRef.current;
     }
@@ -4203,13 +4970,13 @@ function ExploringClimber({ scale, onOutOfBounds }: { scale: number; onOutOfBoun
         <sphereGeometry
           args={[headR * 1.05, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55]}
         />
-        <meshStandardMaterial color="#cc4422" roughness={0.9} />
+        <meshStandardMaterial color="#1a1a1a" roughness={0.9} />
       </mesh>
       <mesh position={[0, headY + headR * 0.2, 0]}>
         <cylinderGeometry
           args={[headR * 1.07, headR * 1.09, headR * 0.18, 14]}
         />
-        <meshStandardMaterial color="#aa3318" roughness={0.85} />
+        <meshStandardMaterial color="#111111" roughness={0.85} />
       </mesh>
 
       {/* Torso */}
@@ -4382,11 +5149,15 @@ function ExploreCamera() {
     // "Behind" means opposite of facing direction
     const behindX = -Math.sin(facing) * camDist;
     const behindZ = -Math.cos(facing) * camDist;
-    const camTarget = new THREE.Vector3(explorerPos.x, 0.8, explorerPos.z);
+    const playerY = getTerrainHeight(explorerPos.x, explorerPos.z);
+    const camX = explorerPos.x + behindX;
+    const camZ = explorerPos.z + behindZ;
+    const camTerrainY = getTerrainHeight(camX, camZ);
+    const camTarget = new THREE.Vector3(explorerPos.x, playerY + 0.8, explorerPos.z);
     const camPos = new THREE.Vector3(
-      explorerPos.x + behindX,
-      camHeight,
-      explorerPos.z + behindZ,
+      camX,
+      Math.max(camTerrainY + 1.5, playerY + camHeight),
+      camZ,
     );
     state.camera.position.lerp(camPos, 0.06);
     state.camera.lookAt(camTarget);
@@ -4457,10 +5228,10 @@ export default function ClimbingScene({
           castShadow
         />
         <pointLight position={[-2, 3, 3]} intensity={0.3} />
-        <fog attach="fog" args={["#7a8fa6", 20, 70]} />
+        <fog attach="fog" args={["#7a8fa6", 40, 160]} />
         <Mountains />
         <River />
-        <DeerHerd />
+        <DeerHerd isExploring={isExploring} />
         <Rocks />
         <group position={[5, 0, -6]} rotation={[0, -0.4, 0]}>
           <Tent />
@@ -4469,6 +5240,8 @@ export default function ClimbingScene({
         <CragDog isExploring={isExploring} />
         <ClimbingShop />
         <Birds />
+        <Trails />
+        {isExploring && <TrailHikers />}
         <Wall
           segments={wallSegments}
           onWallClick={onWallClick}
@@ -4480,6 +5253,7 @@ export default function ClimbingScene({
           onHoldClick={onHoldClick}
           eraserMode={eraserMode}
         />
+        {isExploring && <MagicSparkleTracker />}
         {isExploring ? (
           <ExploringClimber scale={config.heightFt / 5.75} onOutOfBounds={onOutOfBounds} />
         ) : ragdollParts ? (
